@@ -5,7 +5,7 @@ import time
 from ibov.pessoal import financeiro, rendimentos
 import functions
 from dotenv import load_dotenv
-from binance.client import Client
+from binance.client import  Client
 
 load_dotenv()
 
@@ -101,11 +101,11 @@ mensagem = (
     f"💰 CDB 02/2031: R$ {financeiro.cdb:,.2f}\n\n"
     f"🌎 **BINANCE (detalhado)**\n"
     f"{texto_binance}\n"
-    f"💵 **Total Binance:** $ {total_usd_binance:,.2f}\n"
+    f"💵 **Total de dólares: $ {total_usd_binance:,.2f}\n"
     f"💵 **Em Reais:** R$ {valor_dolares_reais:,.2f} ({percentual_dolar:.2f}%)\n\n"
     f"📥 **Aportes Bolsa:** R$ {total_aportes:,.2f}\n"
     f"📈 **Dividendos:** R$ {total_rendimentos:,.2f}\n"
-    f"💵 **Lucro valorização ativos:** R$ {lucro_real_bolsa:,.2f}\n\n" # Espaço adicionado aqui
+    f"💵 **Lucro valorização ativos:** R$ {lucro_real_bolsa:,.2f}\n\n" 
     f"📊 **PATRIMÔNIO TOTAL: R$ {total_carteira:,.2f}**"
 )
 
