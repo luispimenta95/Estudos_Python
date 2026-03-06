@@ -20,14 +20,14 @@ def deve_executar():
     hoje = datetime.today()
     dia = hoje.day
 
-    # --- regra dia 15 ---
-    dia_execucao_15 = 15
-    data_15 = datetime(hoje.year, hoje.month, dia_execucao_15)
+    # No meu caso , a ideia é executar dia 15 e ultimo dia do mês
+    dia_execucao = 15
+    data_15 = datetime(hoje.year, hoje.month, dia_execucao)
 
-    if data_15.weekday() == 5:
-        dia_execucao_15 = 14
-    elif data_15.weekday() == 6:
-        dia_execucao_15 = 13
+    if data_15.weekday() == 5: ## Pagamento caiu num sábado
+        dia_execucao = 14
+    elif data_15.weekday() == 6: ## Pagamento caiu num domingo
+        dia_execucao = 13
 
     # --- ultimo dia do mês ---
     ultimo_dia = calendar.monthrange(hoje.year, hoje.month)[1]
@@ -40,7 +40,7 @@ def deve_executar():
     elif data_final.weekday() == 6:
         dia_execucao_final = ultimo_dia - 2
 
-    if dia == dia_execucao_15 or dia == dia_execucao_final:
+    if dia == dia_execucao or dia == dia_execucao_final:
         return True
 
     return False
@@ -234,7 +234,7 @@ lucro_real_bolsa = total_atual_bolsa - total_aportes
 # =============================
 
 mensagem = (
-    f"Olá {nome_cliente}, seu patrimônio atualizado:\n\n"
+    f"Olá {nome_cliente}, segue seu patrimônio atualizado:\n\n"
     f"📅 {data_atual}\n\n"
 
     f"💰 Bolsa: R$ {total_atual_bolsa:,.2f} ({percentual_bolsa:.2f}%)\n"
