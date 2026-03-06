@@ -1,0 +1,12 @@
+#Bot telegram
+
+Crie um bot com @BotFather no telegram
+gere api token
+envie mensagens aleatorias pelo browser para o bot criado
+gere o token e acesse https://api.telegram.org/bot{Token}/getUpdates
+do objeto chat recupere a propriedade id
+adicione token e id no arquivo .env
+
+#b3
+
+b3 não tem integração. Todos os lançamentos sao manuais, em rendimentos.py e financeiro.py (Não ficam versionados por serem pessoal)
