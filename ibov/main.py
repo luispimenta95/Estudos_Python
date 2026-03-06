@@ -4,7 +4,7 @@ import os
 import time
 import sys
 import calendar
-from ibov.pessoal import financeiro, rendimentos
+from pessoal import financeiro, rendimentos
 import functions
 from dotenv import load_dotenv
 from binance.client import Client
@@ -22,7 +22,7 @@ def deve_executar():
 
     # --- regra dia 15 ---
     dia_execucao_15 = 15
-    data_15 = datetime(hoje.year, hoje.month, 15)
+    data_15 = datetime(hoje.year, hoje.month, dia_execucao_15)
 
     if data_15.weekday() == 5:
         dia_execucao_15 = 14
@@ -57,31 +57,53 @@ if not deve_executar():
 nome_cliente = 'Luis Felipe'
 data_atual = datetime.now().strftime("%d/%m/%Y")
 
-# === Binance ===
+# =============================
+# BINANCE
+# =============================
+
 api_key = os.getenv('BINANCE_KEY')
 api_secret = os.getenv('BINANCE_SECRET')
 
 client_binance = Client(api_key, api_secret)
 
-# Sincroniza horário para evitar erro -1021
 server_time = client_binance.get_server_time()
 client_binance.timestamp_offset = server_time['serverTime'] - int(time.time() * 1000)
 
-# === Busca Cotações Bolsa ===
-tickers = list(financeiro.carteira.keys())
-dados_download = yf.download(tickers, period="1d", auto_adjust=True, progress=False)["Close"]
+# =============================
+# BUSCA COTAÇÕES
+# =============================
 
-# === Busca Cotação Dólar ===
-dolar_raw = yf.download("USDBRL=X", period="1d", auto_adjust=True, progress=False)["Close"]
+tickers = list(financeiro.carteira.keys())
+
+dados_download = yf.download(
+    tickers,
+    period="1d",
+    auto_adjust=True,
+    progress=False
+)["Close"]
+
+# =============================
+# DÓLAR
+# =============================
+
+dolar_raw = yf.download(
+    "USDBRL=X",
+    period="1d",
+    auto_adjust=True,
+    progress=False
+)["Close"]
 
 try:
-    cotacao_dolar = float(dolar_raw.iloc[-1].item() if hasattr(dolar_raw.iloc[-1], 'item') else dolar_raw.iloc[-1])
+    cotacao_dolar = float(
+        dolar_raw.iloc[-1].item()
+        if hasattr(dolar_raw.iloc[-1], 'item')
+        else dolar_raw.iloc[-1]
+    )
 except:
     cotacao_dolar = 5.0
 
-
 # =============================
-# BINANCE
+# BINANCE ASSETS
 # =============================
 
 def get_binance_assets():
@@ -122,11 +144,11 @@ def get_binance_assets():
 
 
 ativos_binance, total_usd_binance = get_binance_assets()
+
 valor_dolares_reais = total_usd_binance * cotacao_dolar
 
-
 # =============================
-# Cálculo Bolsa
+# CÁLCULO BOLSA
 # =============================
 
 total_atual_bolsa = 0.0
@@ -149,27 +171,33 @@ for ticker, info in financeiro.carteira.items():
 
     total_atual_bolsa += preco * qtd
 
-
 # =============================
-# Patrimônio
+# PATRIMÔNIO
 # =============================
 
 valor_cdb = financeiro.cdb
 
 total_carteira = total_atual_bolsa + valor_cdb + valor_dolares_reais
 
+# =============================
+# SUGESTÃO DE APORTES
+# =============================
+
+aporte2 = total_carteira * 0.02
+aporte4 = total_carteira * 0.04
+aporte8 = total_carteira * 0.08
+aporte10 = total_carteira * 0.10
 
 # =============================
-# Percentuais
+# PERCENTUAIS
 # =============================
 
 percentual_bolsa = (total_atual_bolsa / total_carteira * 100) if total_carteira > 0 else 0
 percentual_cdb = (valor_cdb / total_carteira * 100) if total_carteira > 0 else 0
 percentual_crypto = (valor_dolares_reais / total_carteira * 100) if total_carteira > 0 else 0
 
-
 # =============================
-# Texto Binance
+# TEXTO BINANCE
 # =============================
 
 texto_binance = f"💵 Cotação do dólar: R$ {cotacao_dolar:,.2f}\n\n"
@@ -187,9 +215,8 @@ for ativo in ativos_binance:
         f"{percentual_ativo:.2f}%\n"
     )
 
-
 # =============================
-# Rendimentos
+# RENDIMENTOS
 # =============================
 
 total_rendimentos = sum(
@@ -202,9 +229,8 @@ total_aportes = sum(valor for _, valor in financeiro.aportes)
 
 lucro_real_bolsa = total_atual_bolsa - total_aportes
 
-
 # =============================
-# Mensagem
+# MENSAGEM
 # =============================
 
 mensagem = (
@@ -224,11 +250,17 @@ mensagem = (
     f"📈 Dividendos: R$ {total_rendimentos:,.2f}\n"
     f"💵 Lucro valorização ativos: R$ {lucro_real_bolsa:,.2f}\n\n"
 
-    f"📊 PATRIMÔNIO TOTAL: R$ {total_carteira:,.2f}"
+    f"📊 PATRIMÔNIO TOTAL: R$ {total_carteira:,.2f}\n\n"
+
+    f"💡 Sugestão de aportes:\n"
+    f"• 2% da carteira: R$ {aporte2:,.2f}\n"
+    f"• 4% da carteira: R$ {aporte4:,.2f}\n"
+    f"• 8% da carteira: R$ {aporte8:,.2f}\n"
+    f"• 10% da carteira: R$ {aporte10:,.2f}\n\n"
 )
 
 # =============================
-# Envio
+# ENVIO
 # =============================
 
 functions.sendMessageTelegram(mensagem)
