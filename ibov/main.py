@@ -3,13 +3,10 @@ import functions
 
 
 def main():
-
-    if not functions.deve_executar():
-        print("Hoje não é dia de execução do relatório.")
-        sys.exit()
-
     dados = functions.gerar_relatorio()
-
+    if not functions.deve_executar():
+        print("Hoje não é dia de execução do relatório. Mas os dados foram gerados" + dados)
+        sys.exit()
     mensagem = functions.montar_mensagem(dados)
 
     functions.sendMessageTelegram(mensagem)

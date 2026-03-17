@@ -64,8 +64,8 @@ def deve_executar():
     elif data_final.weekday() == 6:
         dia_execucao_final = ultimo_dia - 2
 
-    #return dia == dia_execucao or dia == dia_execucao_final
-    return True
+    return dia == dia_execucao or dia == dia_execucao_final
+    #return True
 
 # =============================
 # BINANCE
