@@ -499,16 +499,17 @@ def processar_aluno(
     wait: WebDriverWait,
     aba_principal: str,
     nome: str,
-) -> bool:
+) -> str | None:
+    """Retorna o caminho do PDF baixado, ou None em falha."""
     try:
         fechar_abas_extras(driver, aba_principal)
         limpar_overlays(driver)
         card = localizar_card_por_nome(driver, wait, nome)
         abrir_relatorio_coach_do_card(driver, wait, card, nome)
         configurar_filtros_relatorio(driver, wait, nome)
-        acessar_baixar_relatorio(driver, wait, aba_principal, nome)
+        arquivo = acessar_baixar_relatorio(driver, wait, aba_principal, nome)
         limpar_overlays(driver)
-        return True
+        return arquivo
     except (
         TimeoutException,
         ElementClickInterceptedException,
@@ -527,30 +528,86 @@ def processar_aluno(
             fechar_abas_extras(driver, aba_principal)
         except Exception:
             pass
-        return False
+        return None
+
+
+def formatar_duracao(segundos: float) -> str:
+    total = int(round(segundos))
+    horas, resto = divmod(total, 3600)
+    minutos, segs = divmod(resto, 60)
+    if horas:
+        return f"{horas}h {minutos}min {segs}s"
+    if minutos:
+        return f"{minutos}min {segs}s"
+    return f"{segs}s"
+
+
+def gravar_log_resumo(
+    inicio: datetime,
+    fim: datetime,
+    total_alunos: int,
+    pdfs: list[str],
+    total_erro: int,
+) -> Path:
+    caminho = Path(PASTA_DOWNLOAD) / f"log_download_{inicio.strftime('%Y%m%d_%H%M%S')}.txt"
+    linhas = [
+        "Relatórios Tutory - resumo da execução",
+        f"Início: {inicio.strftime('%d/%m/%Y %H:%M:%S')}",
+        f"Fim:    {fim.strftime('%d/%m/%Y %H:%M:%S')}",
+        f"Duração: {formatar_duracao((fim - inicio).total_seconds())}",
+        f"Alunos processados: {total_alunos}",
+        f"PDFs baixados: {len(pdfs)}",
+        f"Falhas: {total_erro}",
+        f"Pasta: {PASTA_DOWNLOAD}",
+        "",
+        "Arquivos:",
+    ]
+    if pdfs:
+        linhas.extend(f"- {Path(p).name}" for p in pdfs)
+    else:
+        linhas.append("- (nenhum)")
+
+    texto = "\n".join(linhas) + "\n"
+    caminho.write_text(texto, encoding="utf-8")
+    return caminho
 
 
 def baixar_todos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+    inicio = datetime.now()
+    print(f"Processo iniciado em: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
+
     aba_principal = driver.current_window_handle
     nomes = coletar_todos_alunos(driver, wait)
     if not nomes:
+        fim = datetime.now()
         print("Nenhum aluno encontrado em /alunos/consulta.")
+        log = gravar_log_resumo(inicio, fim, 0, [], 0)
+        print(f"Log salvo em: {log}")
         return
 
-    total_ok = 0
+    pdfs: list[str] = []
     total_erro = 0
 
     for i, nome in enumerate(nomes, start=1):
         print("=" * 50)
         print(f"Aluno {i}/{len(nomes)}: {nome}")
-        if processar_aluno(driver, wait, aba_principal, nome):
-            total_ok += 1
+        arquivo = processar_aluno(driver, wait, aba_principal, nome)
+        if arquivo:
+            pdfs.append(arquivo)
         else:
             total_erro += 1
 
+    fim = datetime.now()
+    log = gravar_log_resumo(inicio, fim, len(nomes), pdfs, total_erro)
+
     print("=" * 50)
-    print(f"Concluído. Sucesso: {total_ok} | Erros: {total_erro}")
+    print(f"Início: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"Fim:    {fim.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"Duração: {formatar_duracao((fim - inicio).total_seconds())}")
+    print(f"PDFs baixados: {len(pdfs)}")
+    print(f"Falhas: {total_erro}")
     print(f"Arquivos em: {PASTA_DOWNLOAD}")
+    print(f"Log salvo em: {log}")
 
 
 def main() -> None:
