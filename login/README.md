@@ -1,31 +1,26 @@
-# Login em plataforma web
+# Relatórios Tutory (todos os alunos)
 
-Script Python que abre a página de login, envia usuário/senha e mantém a sessão (cookies) para continuar autenticado.
+Script Selenium que:
+
+1. faz login no painel
+2. abre **Alunos → Pesquisa**
+3. para **cada aluno** da lista:
+   - abre **Relatório do Coach**
+   - aplica filtros (questões + mês + dia 1–15)
+   - baixa o PDF
+4. avança a paginação, se existir
 
 ## Setup
 
 ```bash
 cd login
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edite o `.env` com a URL e as credenciais da plataforma.
+Preencha `LOGIN_USER` e `LOGIN_PASSWORD` no `.env`.
 
-## Como descobrir os campos do formulário
-
-1. Abra a página de login no navegador
-2. Pressione F12 → aba Elements / Inspetor
-3. Localize os inputs, por exemplo:
-
-```html
-<input type="email" name="email">
-<input type="password" name="password">
-```
-
-4. Coloque esses `name` em `FIELD_USER` e `FIELD_PASSWORD`
+É preciso ter **Google Chrome** + **ChromeDriver** compatível no PATH.
 
 ## Executar
 
@@ -33,8 +28,10 @@ Edite o `.env` com a URL e as credenciais da plataforma.
 python login.py
 ```
 
+Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.pdf`.
+
 ## Observações
 
-- Funciona bem em logins por formulário HTML (POST + cookies/CSRF).
-- Se o site for 100% JavaScript (SPA) ou tiver CAPTCHA, este script com `requests` não basta — aí é preciso Selenium ou Playwright.
-- Nunca versionar o arquivo `.env` com senha real.
+- Não versionar o `.env` com senha.
+- Se a lista de alunos não aparecer, confira se a conta vê alunos em `/alunos/consulta`.
+- Em erro por aluno, o script tira screenshot e segue para o próximo.
