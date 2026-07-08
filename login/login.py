@@ -1,171 +1,186 @@
-"""
-Script de login em plataforma web via sessão HTTP.
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-Como usar:
-1. Copie .env.example para .env e preencha URL, usuário e senha
-2. Inspecione o formulário de login no navegador (F12) e ajuste
-   FIELD_USER / FIELD_PASSWORD com o atributo name dos inputs
-3. pip install -r requirements.txt
-4. python login.py
-"""
 
-from __future__ import annotations
+options = Options()
 
-import os
-import sys
-from typing import Optional
-from urllib.parse import urljoin
+EMAIL = "missaonomeacao"
+SENHA = "05473793150"
+URL_LOGIN = "https://admin.tutory.com.br/login"
 
-import requests
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 
-load_dotenv()
+# Estabilidade
+options.add_argument("--disable-gpu")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-software-rasterizer")
 
-LOGIN_URL = os.getenv("LOGIN_URL", "").strip()
-LOGIN_USER = os.getenv("LOGIN_USER", "").strip()
-LOGIN_PASSWORD = os.getenv("LOGIN_PASSWORD", "").strip()
-FIELD_USER = os.getenv("FIELD_USER", "email").strip()
-FIELD_PASSWORD = os.getenv("FIELD_PASSWORD", "password").strip()
-CHECK_URL = os.getenv("CHECK_URL", "").strip()
-SUCCESS_TEXT = os.getenv("SUCCESS_TEXT", "").strip()
-FAILURE_TEXT = os.getenv("FAILURE_TEXT", "").strip()
+# Evita alguns problemas de automação
+options.add_argument("--disable-blink-features=AutomationControlled")
 
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+# Mantém um perfil separado do seu Chrome principal
+options.add_argument("--user-data-dir=/home/luis-pimenta/.chrome-selenium")
+
+# Inicia maximizado
+options.add_argument("--start-maximized")
+
+# Se quiser executar sem abrir a janela
+# options.add_argument("--headless=new")
+
+
+driver = webdriver.Chrome(
+    service=Service(),
+    options=options
 )
 
-
-def validar_config() -> None:
-    faltando = []
-    if not LOGIN_URL:
-        faltando.append("LOGIN_URL")
-    if not LOGIN_USER:
-        faltando.append("LOGIN_USER")
-    if not LOGIN_PASSWORD:
-        faltando.append("LOGIN_PASSWORD")
-    if faltando:
-        print("Configure no arquivo .env:", ", ".join(faltando))
-        print("Use .env.example como modelo.")
-        sys.exit(1)
+wait = WebDriverWait(driver, 20)
 
 
-def criar_sessao() -> requests.Session:
-    sessao = requests.Session()
-    sessao.headers.update(
-        {
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-        }
+# ============================================
+# FUNÇÕES
+# ============================================
+
+def login():
+
+    print("Abrindo página de login...")
+
+    driver.get(URL_LOGIN)
+
+    account = wait.until(
+        EC.visibility_of_element_located((By.NAME, "account"))
     )
-    return sessao
 
-
-def extrair_campos_ocultos(html: str) -> dict[str, str]:
-    """Pega inputs hidden (CSRF, tokens, etc.) do formulário de login."""
-    soup = BeautifulSoup(html, "lxml")
-    campos: dict[str, str] = {}
-
-    form = soup.find("form")
-    escopo = form if form else soup
-
-    for inp in escopo.find_all("input"):
-        nome = inp.get("name")
-        tipo = (inp.get("type") or "text").lower()
-        if not nome:
-            continue
-        if tipo == "hidden" or nome.lower() in {"csrf", "csrfmiddlewaretoken", "_token", "authenticity_token"}:
-            campos[nome] = inp.get("value") or ""
-
-    return campos
-
-
-def descobrir_action(html: str, base_url: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
-    form = soup.find("form")
-    if form and form.get("action"):
-        return urljoin(base_url, form["action"])
-    return base_url
-
-
-def fazer_login(sessao: requests.Session) -> requests.Response:
-    print(f"Acessando página de login: {LOGIN_URL}")
-    pagina = sessao.get(LOGIN_URL, timeout=30)
-    pagina.raise_for_status()
-
-    payload = extrair_campos_ocultos(pagina.text)
-    payload[FIELD_USER] = LOGIN_USER
-    payload[FIELD_PASSWORD] = LOGIN_PASSWORD
-
-    action = descobrir_action(pagina.text, LOGIN_URL)
-    print(f"Enviando credenciais para: {action}")
-
-    resposta = sessao.post(
-        action,
-        data=payload,
-        timeout=30,
-        allow_redirects=True,
-        headers={"Referer": LOGIN_URL},
+    password = wait.until(
+        EC.visibility_of_element_located((By.NAME, "password"))
     )
-    return resposta
+
+    account.clear()
+    account.send_keys(EMAIL)
+
+    password.clear()
+    password.send_keys(SENHA)
+
+    botao = wait.until(
+        EC.element_to_be_clickable(
+            (By.CSS_SELECTOR, "input.login-submit")
+        )
+    )
+
+    driver.execute_script(
+        "arguments[0].click();",
+        botao
+    )
+
+    wait.until(
+        lambda d: "/login" not in d.current_url
+    )
+
+    print("✅ Login realizado")
 
 
-def login_ok(resposta: requests.Response, sessao: requests.Session) -> bool:
-    texto = resposta.text.lower()
+def abrir_pesquisa_alunos():
 
-    if FAILURE_TEXT and FAILURE_TEXT.lower() in texto:
-        return False
+    print("Abrindo menu Alunos...")
 
-    if SUCCESS_TEXT:
-        alvo = CHECK_URL or resposta.url
-        pagina = sessao.get(alvo, timeout=30) if CHECK_URL else resposta
-        return SUCCESS_TEXT.lower() in pagina.text.lower()
+    menu = wait.until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//a[contains(@class,'dropdown-toggle') and normalize-space()='Alunos']"
+            )
+        )
+    )
 
-    if CHECK_URL:
-        check = sessao.get(CHECK_URL, timeout=30, allow_redirects=True)
-        # Se redirecionou de volta para login, provavelmente falhou
-        if "login" in check.url.lower() and "login" not in CHECK_URL.lower():
-            return False
-        return check.status_code == 200
-
-    # Heurística simples: não ficou na página de login e status OK
-    ficou_no_login = "login" in resposta.url.lower() and resposta.url.rstrip("/") == LOGIN_URL.rstrip("/")
-    return resposta.status_code in (200, 302) and not ficou_no_login
+    driver.execute_script(
+        "arguments[0].click();",
+        menu
+    )
 
 
-def cookies_resumo(sessao: requests.Session) -> str:
-    nomes = [c.name for c in sessao.cookies]
-    return ", ".join(nomes) if nomes else "(nenhum)"
+    print("Abrindo Pesquisa de Alunos...")
+
+    pesquisar = wait.until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//a[@href='/alunos/consulta']"
+            )
+        )
+    )
+
+    driver.execute_script(
+        "arguments[0].click();",
+        pesquisar
+    )
 
 
-def main() -> Optional[requests.Session]:
-    validar_config()
-    sessao = criar_sessao()
+    wait.until(
+        lambda d: "/alunos/consulta" in d.current_url
+    )
 
-    try:
-        resposta = fazer_login(sessao)
-    except requests.RequestException as exc:
-        print(f"Erro de rede ao tentar login: {exc}")
-        sys.exit(1)
-
-    print(f"Status HTTP: {resposta.status_code}")
-    print(f"URL final: {resposta.url}")
-    print(f"Cookies: {cookies_resumo(sessao)}")
-
-    if login_ok(resposta, sessao):
-        print("Login realizado com sucesso.")
-        print("A sessão (cookies) está pronta para novas requisições autenticadas.")
-        return sessao
-
-    print("Login falhou. Verifique:")
-    print("- usuário/senha no .env")
-    print("- FIELD_USER / FIELD_PASSWORD (name dos inputs no HTML)")
-    print("- se o site exige JavaScript (aí use Selenium/Playwright)")
-    print("- SUCCESS_TEXT / FAILURE_TEXT / CHECK_URL para validação")
-    sys.exit(1)
+    print("✅ Tela de pesquisa aberta")
 
 
-if __name__ == "__main__":
-    main()
+def abrir_relatorio_coach():
+
+    print("Abrindo menu de opções...")
+
+    botao_opcoes = wait.until(
+        EC.element_to_be_clickable(
+            (
+                By.CSS_SELECTOR,
+                "button.dropdown-toggle-split"
+            )
+        )
+    )
+
+    driver.execute_script(
+        "arguments[0].click();",
+        botao_opcoes
+    )
+
+
+    print("Clicando em Relatório do Coach...")
+
+    relatorio = wait.until(
+        EC.element_to_be_clickable(
+            (
+                By.CSS_SELECTOR,
+                "a.btn-generate-report"
+            )
+        )
+    )
+
+    driver.execute_script(
+        "arguments[0].click();",
+        relatorio
+    )
+
+
+    print("✅ Relatório do Coach selecionado")
+
+
+# ============================================
+# EXECUÇÃO
+# ============================================
+
+try:
+
+    login()
+
+    abrir_pesquisa_alunos()
+
+    abrir_relatorio_coach()
+
+    print(driver.current_url)
+
+    input("\nPressione ENTER para fechar...")
+
+
+finally:
+
+    driver.quit()
