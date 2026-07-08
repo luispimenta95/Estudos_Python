@@ -106,6 +106,102 @@ def fechar_abas_extras(driver: webdriver.Chrome, aba_principal: str) -> None:
     driver.switch_to.window(aba_principal)
 
 
+def limpar_overlays(driver: webdriver.Chrome) -> None:
+    """Fecha dropdowns/modais/sweetalert que sobraram do aluno anterior."""
+    driver.execute_script(
+        """
+        document.querySelectorAll('.dropdown-menu.show').forEach(el => el.classList.remove('show'));
+        document.querySelectorAll('.dropdown.show, .btn-group.show').forEach(el => el.classList.remove('show'));
+        document.querySelectorAll('.modal.show').forEach(el => {
+            el.classList.remove('show');
+            el.style.display = 'none';
+        });
+        document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('padding-right');
+        document.querySelectorAll('.swal-overlay, .swal-modal').forEach(el => el.remove());
+        """
+    )
+    try:
+        from selenium.webdriver.common.keys import Keys
+
+        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+    except Exception:
+        pass
+    time.sleep(0.2)
+
+
+def elemento_visivel(el) -> bool:
+    try:
+        return el.is_displayed() and el.size.get("height", 0) > 0 and el.size.get("width", 0) > 0
+    except StaleElementReferenceException:
+        return False
+
+
+def esperar_link_relatorio_visivel(driver: webdriver.Chrome, card, timeout: int = TIMEOUT):
+    """
+    Não use XPath global: após o 1º aluno existem vários
+    'Relatório do Coach' no DOM (ocultos). Pegamos só o visível
+    do menu aberto / do card atual.
+    """
+    fim = time.time() + timeout
+    ultimo_erro = "link não apareceu"
+
+    while time.time() < fim:
+        candidatos = []
+
+        # 1) menu Bootstrap aberto em qualquer lugar
+        candidatos.extend(
+            driver.find_elements(
+                By.CSS_SELECTOR,
+                ".dropdown-menu.show a.btn-generate-report, "
+                ".dropdown-menu.show a[class*='btn-generate-report']",
+            )
+        )
+        # 2) dentro do card do aluno
+        candidatos.extend(
+            card.find_elements(
+                By.CSS_SELECTOR,
+                ".dropdown-menu a.btn-generate-report, a.btn-generate-report, "
+                ".pesquisa-aluno-acoes a",
+            )
+        )
+        # 3) fallback por texto, mas só visíveis
+        candidatos.extend(
+            driver.find_elements(
+                By.XPATH,
+                "//a[contains(normalize-space(.),'Relatório do Coach') or "
+                "contains(normalize-space(.),'Relatorio do Coach')]",
+            )
+        )
+
+        vistos = set()
+        for el in candidatos:
+            try:
+                id_el = el.id
+                if id_el in vistos:
+                    continue
+                vistos.add(id_el)
+                texto = (el.text or el.get_attribute("textContent") or "").strip().lower()
+                if "relat" not in texto and "coach" not in texto:
+                    # ainda pode ser o botão certo só com classe
+                    classes = el.get_attribute("class") or ""
+                    if "btn-generate-report" not in classes:
+                        continue
+                if not elemento_visivel(el):
+                    continue
+                return el
+            except StaleElementReferenceException:
+                ultimo_erro = "elemento stale"
+                continue
+
+        time.sleep(0.25)
+
+    raise TimeoutException(
+        f"Relatório do Coach visível não encontrado em {timeout}s ({ultimo_erro})"
+    )
+
+
 def login(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     print("Abrindo página de login...")
     driver.get(URL_LOGIN)
@@ -205,7 +301,9 @@ def coletar_todos_alunos(driver: webdriver.Chrome, wait: WebDriverWait) -> list[
 
 def localizar_card_por_nome(driver: webdriver.Chrome, wait: WebDriverWait, nome: str):
     """Abre a consulta e navega páginas até achar o card do aluno."""
+    limpar_overlays(driver)
     abrir_pesquisa_alunos(driver, wait)
+    limpar_overlays(driver)
 
     while True:
         cards = driver.find_elements(By.CSS_SELECTOR, ".pesquisa-aluno-container")
@@ -227,8 +325,9 @@ def abrir_relatorio_coach_do_card(
     driver: webdriver.Chrome, wait: WebDriverWait, card, nome: str
 ) -> None:
     print(f"[{nome}] Abrindo opções...")
+    limpar_overlays(driver)
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
-    time.sleep(0.3)
+    time.sleep(0.4)
 
     botao_opcoes = None
     for seletor in (
@@ -243,21 +342,47 @@ def abrir_relatorio_coach_do_card(
             break
     if botao_opcoes is None:
         # fallback: qualquer botão de dropdown no card
-        achados = card.find_elements(By.CSS_SELECTOR, ".pesquisa-aluno-acoes button, .dropdown button")
+        achados = card.find_elements(
+            By.CSS_SELECTOR, ".pesquisa-aluno-acoes button, .dropdown button"
+        )
         if achados:
             botao_opcoes = achados[0]
     if botao_opcoes is None:
         raise RuntimeError(f"[{nome}] Botão de opções não encontrado no card.")
 
-    js_click(driver, botao_opcoes)
+    # Clique "humano" no toggle; js_click às vezes não abre o menu Bootstrap
+    try:
+        wait.until(EC.element_to_be_clickable(botao_opcoes))
+        botao_opcoes.click()
+    except Exception:
+        js_click(driver, botao_opcoes)
 
-    xpath_relatorio = (
-        "//a[contains(@class,'btn-generate-report') and "
-        "contains(normalize-space(),'Relatório do Coach')]"
-    )
-    relatorio = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_relatorio)))
-    js_click(driver, relatorio)
+    # Garante que algum menu ficou .show; se não, tenta de novo
+    time.sleep(0.35)
+    menus_abertos = driver.find_elements(By.CSS_SELECTOR, ".dropdown-menu.show")
+    if not menus_abertos:
+        print(f"[{nome}] Menu não abriu no 1º clique; tentando de novo...")
+        limpar_overlays(driver)
+        time.sleep(0.2)
+        try:
+            botao_opcoes.click()
+        except Exception:
+            js_click(driver, botao_opcoes)
+        time.sleep(0.35)
+
+    relatorio = esperar_link_relatorio_visivel(driver, card)
+    try:
+        relatorio.click()
+    except Exception:
+        js_click(driver, relatorio)
     print(f"[{nome}] Relatório do Coach aberto")
+
+    # Aguarda UI do relatório (filtros) aparecer
+    wait.until(
+        EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "button.btn-selector[data-value='questoes'], #relDataIni")
+        )
+    )
 
 
 def configurar_filtros_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, nome: str) -> None:
@@ -377,12 +502,19 @@ def processar_aluno(
 ) -> bool:
     try:
         fechar_abas_extras(driver, aba_principal)
+        limpar_overlays(driver)
         card = localizar_card_por_nome(driver, wait, nome)
         abrir_relatorio_coach_do_card(driver, wait, card, nome)
         configurar_filtros_relatorio(driver, wait, nome)
         acessar_baixar_relatorio(driver, wait, aba_principal, nome)
+        limpar_overlays(driver)
         return True
-    except (TimeoutException, ElementClickInterceptedException, RuntimeError, StaleElementReferenceException) as exc:
+    except (
+        TimeoutException,
+        ElementClickInterceptedException,
+        RuntimeError,
+        StaleElementReferenceException,
+    ) as exc:
         print(f"[{nome}] ERRO: {exc}")
         try:
             shot = Path(PASTA_DOWNLOAD) / f"erro_{nome.replace(' ', '_')[:40]}.png"
@@ -390,7 +522,11 @@ def processar_aluno(
             print(f"[{nome}] Screenshot: {shot}")
         except Exception:
             pass
-        fechar_abas_extras(driver, aba_principal)
+        try:
+            limpar_overlays(driver)
+            fechar_abas_extras(driver, aba_principal)
+        except Exception:
+            pass
         return False
 
 
