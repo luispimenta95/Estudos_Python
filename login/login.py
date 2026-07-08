@@ -1,20 +1,22 @@
 """
-Script de login em plataforma web via sessão HTTP.
+Login no painel Tutory (admin.tutory.com.br).
+
+O formulário da página usa AJAX (data-ajax) e envia POST para /intent/login
+com os campos account e password. Em sucesso, a API devolve JSON sem "error"
+e o browser redireciona para /index.
 
 Como usar:
-1. Copie .env.example para .env e preencha URL, usuário e senha
-2. Inspecione o formulário de login no navegador (F12) e ajuste
-   FIELD_USER / FIELD_PASSWORD com o atributo name dos inputs
-3. pip install -r requirements.txt
-4. python login.py
+1. cp .env.example .env  e preencha LOGIN_USER / LOGIN_PASSWORD
+2. pip install -r requirements.txt
+3. python login.py
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from typing import Optional
-from urllib.parse import urljoin
+from typing import Any, Optional
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -22,14 +24,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-LOGIN_URL = os.getenv("LOGIN_URL", "").strip()
+LOGIN_URL = os.getenv("LOGIN_URL", "https://admin.tutory.com.br/login").strip()
 LOGIN_USER = os.getenv("LOGIN_USER", "").strip()
 LOGIN_PASSWORD = os.getenv("LOGIN_PASSWORD", "").strip()
-FIELD_USER = os.getenv("FIELD_USER", "email").strip()
+FIELD_USER = os.getenv("FIELD_USER", "account").strip()
 FIELD_PASSWORD = os.getenv("FIELD_PASSWORD", "password").strip()
+LOGIN_ACTION = os.getenv("LOGIN_ACTION", "").strip()  # ex.: /intent/login
 CHECK_URL = os.getenv("CHECK_URL", "").strip()
-SUCCESS_TEXT = os.getenv("SUCCESS_TEXT", "").strip()
-FAILURE_TEXT = os.getenv("FAILURE_TEXT", "").strip()
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -63,76 +64,109 @@ def criar_sessao() -> requests.Session:
     return sessao
 
 
-def extrair_campos_ocultos(html: str) -> dict[str, str]:
-    """Pega inputs hidden (CSRF, tokens, etc.) do formulário de login."""
-    soup = BeautifulSoup(html, "lxml")
+def extrair_campos_ocultos(form) -> dict[str, str]:
     campos: dict[str, str] = {}
-
-    form = soup.find("form")
-    escopo = form if form else soup
-
-    for inp in escopo.find_all("input"):
+    for inp in form.find_all("input"):
         nome = inp.get("name")
         tipo = (inp.get("type") or "text").lower()
         if not nome:
             continue
-        if tipo == "hidden" or nome.lower() in {"csrf", "csrfmiddlewaretoken", "_token", "authenticity_token"}:
+        if tipo == "hidden":
             campos[nome] = inp.get("value") or ""
-
     return campos
 
 
-def descobrir_action(html: str, base_url: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
-    form = soup.find("form")
-    if form and form.get("action"):
+def descobrir_action(form, base_url: str) -> str:
+    # Tutory: data-action="/intent/login" (AJAX). Fallback: action= ou própria URL.
+    if LOGIN_ACTION:
+        return urljoin(base_url, LOGIN_ACTION)
+    if form.get("data-action"):
+        return urljoin(base_url, form["data-action"])
+    if form.get("action"):
         return urljoin(base_url, form["action"])
     return base_url
 
 
-def fazer_login(sessao: requests.Session) -> requests.Response:
+def eh_ajax(form) -> bool:
+    return (form.get("data-ajax") or "").lower() == "true"
+
+
+def origem(url: str) -> str:
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}"
+
+
+def fazer_login(sessao: requests.Session) -> tuple[requests.Response, bool]:
     print(f"Acessando página de login: {LOGIN_URL}")
     pagina = sessao.get(LOGIN_URL, timeout=30)
     pagina.raise_for_status()
 
-    payload = extrair_campos_ocultos(pagina.text)
+    soup = BeautifulSoup(pagina.text, "lxml")
+    form = soup.find("form")
+    if not form:
+        raise RuntimeError("Formulário de login não encontrado na página.")
+
+    payload = extrair_campos_ocultos(form)
     payload[FIELD_USER] = LOGIN_USER
     payload[FIELD_PASSWORD] = LOGIN_PASSWORD
 
-    action = descobrir_action(pagina.text, LOGIN_URL)
-    print(f"Enviando credenciais para: {action}")
+    action = descobrir_action(form, LOGIN_URL)
+    ajax = eh_ajax(form)
+    print(f"Enviando credenciais para: {action} ({'AJAX/JSON' if ajax else 'HTML form'})")
+
+    headers = {
+        "Referer": LOGIN_URL,
+        "Origin": origem(LOGIN_URL),
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    }
+    if ajax:
+        headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+        headers["X-Requested-With"] = "XMLHttpRequest"
 
     resposta = sessao.post(
         action,
         data=payload,
         timeout=30,
         allow_redirects=True,
-        headers={"Referer": LOGIN_URL},
+        headers=headers,
     )
-    return resposta
+    return resposta, ajax
 
 
-def login_ok(resposta: requests.Response, sessao: requests.Session) -> bool:
-    texto = resposta.text.lower()
+def parse_json(resposta: requests.Response) -> Optional[dict[str, Any]]:
+    try:
+        data = resposta.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
-    if FAILURE_TEXT and FAILURE_TEXT.lower() in texto:
-        return False
 
-    if SUCCESS_TEXT:
-        alvo = CHECK_URL or resposta.url
-        pagina = sessao.get(alvo, timeout=30) if CHECK_URL else resposta
-        return SUCCESS_TEXT.lower() in pagina.text.lower()
+def login_ok(resposta: requests.Response, ajax: bool, sessao: requests.Session) -> tuple[bool, str]:
+    data = parse_json(resposta)
 
-    if CHECK_URL:
-        check = sessao.get(CHECK_URL, timeout=30, allow_redirects=True)
-        # Se redirecionou de volta para login, provavelmente falhou
-        if "login" in check.url.lower() and "login" not in CHECK_URL.lower():
-            return False
-        return check.status_code == 200
+    if ajax or data is not None:
+        if data is None:
+            return False, f"Resposta não-JSON do endpoint AJAX: {resposta.text[:300]}"
+        if data.get("error"):
+            return False, str(data["error"])
+        # Tutory: sucesso quando não há error (result pode ser ausente/true)
+        if data.get("result") is False:
+            return False, str(data.get("error") or data)
+        return True, "Login OK (JSON sem erro)."
 
-    # Heurística simples: não ficou na página de login e status OK
-    ficou_no_login = "login" in resposta.url.lower() and resposta.url.rstrip("/") == LOGIN_URL.rstrip("/")
-    return resposta.status_code in (200, 302) and not ficou_no_login
+    # Fallback HTML clássico
+    if "login" in resposta.url.lower() and resposta.url.rstrip("/") == LOGIN_URL.rstrip("/"):
+        return False, "Permaneceu na página de login."
+
+    return resposta.status_code in (200, 302), f"Status {resposta.status_code}, URL {resposta.url}"
+
+
+def validar_area_logada(sessao: requests.Session) -> tuple[bool, str]:
+    alvo = CHECK_URL or urljoin(LOGIN_URL, "/index")
+    check = sessao.get(alvo, timeout=30, allow_redirects=True)
+    if "login" in check.url.lower():
+        return False, f"Acesso a {alvo} redirecionou para login ({check.url})."
+    return check.status_code == 200, f"Área logada acessível: {check.url} (HTTP {check.status_code})"
 
 
 def cookies_resumo(sessao: requests.Session) -> str:
@@ -145,26 +179,35 @@ def main() -> Optional[requests.Session]:
     sessao = criar_sessao()
 
     try:
-        resposta = fazer_login(sessao)
+        resposta, ajax = fazer_login(sessao)
     except requests.RequestException as exc:
         print(f"Erro de rede ao tentar login: {exc}")
+        sys.exit(1)
+    except RuntimeError as exc:
+        print(str(exc))
         sys.exit(1)
 
     print(f"Status HTTP: {resposta.status_code}")
     print(f"URL final: {resposta.url}")
     print(f"Cookies: {cookies_resumo(sessao)}")
 
-    if login_ok(resposta, sessao):
-        print("Login realizado com sucesso.")
-        print("A sessão (cookies) está pronta para novas requisições autenticadas.")
-        return sessao
+    ok, detalhe = login_ok(resposta, ajax, sessao)
+    print(detalhe)
 
-    print("Login falhou. Verifique:")
-    print("- usuário/senha no .env")
-    print("- FIELD_USER / FIELD_PASSWORD (name dos inputs no HTML)")
-    print("- se o site exige JavaScript (aí use Selenium/Playwright)")
-    print("- SUCCESS_TEXT / FAILURE_TEXT / CHECK_URL para validação")
-    sys.exit(1)
+    if not ok:
+        print("Login falhou.")
+        print("Confira LOGIN_USER / LOGIN_PASSWORD no .env (campo da conta = account).")
+        sys.exit(1)
+
+    area_ok, area_msg = validar_area_logada(sessao)
+    print(area_msg)
+    if not area_ok:
+        print("Login JSON ok, mas a sessão não acessou a área logada.")
+        sys.exit(1)
+
+    print("Login realizado com sucesso.")
+    print("A sessão (cookies) está pronta para novas requisições autenticadas.")
+    return sessao
 
 
 if __name__ == "__main__":
