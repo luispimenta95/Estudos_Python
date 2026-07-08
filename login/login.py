@@ -6,6 +6,16 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from datetime import datetime
 
+import os
+import time
+import glob
+
+PASTA_DOWNLOAD = "/home/luis-pimenta/Relatorios_Tutory"
+
+os.makedirs(
+    PASTA_DOWNLOAD,
+    exist_ok=True
+)
 
 options = Options()
 
@@ -397,6 +407,7 @@ def acessar_baixar_relatorio():
 
 
     print("✅ Download iniciado")
+
 
 
 # ============================================
