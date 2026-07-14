@@ -1,2 +1,2 @@
-selenium
-python-dotenv
+selenium>=4.15,<5
+python-dotenv>=1.0,<2
