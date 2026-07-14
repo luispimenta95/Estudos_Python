@@ -1,14 +1,15 @@
-# Relatórios Tutory (todos os alunos)
+# Relatórios Tutory (alunos ativos)
 
 Script Selenium que:
 
 1. faz login no painel
 2. abre **Alunos → Pesquisa**
-3. para **cada aluno** da lista:
+3. filtra o select **status** para **ativos** (só gera relatório de estudantes ativos)
+4. para **cada aluno** da lista filtrada:
    - abre **Relatório do Coach**
    - aplica filtros (questões + mês + dia 1–15)
    - baixa o PDF
-4. avança a paginação, se existir
+5. avança a paginação, se existir
 
 ## Setup
 
