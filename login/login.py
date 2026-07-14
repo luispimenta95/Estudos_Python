@@ -4,7 +4,7 @@ Baixa o Relatório do Coach no Tutory para os alunos ATIVOS da consulta.
 Fluxo por aluno (igual ao que você já fazia para um):
 1. Login
 2. Alunos → Pesquisa (/alunos/consulta)
-3. Filtro status = ativos (reduz a lista antes de gerar relatórios)
+3. Filtro status = ativos + Buscar (reduz a lista antes de gerar relatórios)
 4. Opções do aluno → Relatório do Coach
 5. Filtros (questões + mês + datas) → Gerar
 6. Acessar Relatório → Baixar
@@ -222,7 +222,7 @@ def login(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
 
 
 def filtrar_alunos_ativos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
-    """Seleciona status=ativos antes de listar/abrir ações dos alunos."""
+    """Seleciona status=ativos e clica em Buscar antes de listar/abrir ações."""
     print("Filtrando alunos com status 'ativos'...")
     select_el = wait.until(EC.presence_of_element_located((By.NAME, "status")))
     Select(select_el).select_by_value("ativos")
@@ -235,6 +235,18 @@ def filtrar_alunos_ativos(driver: webdriver.Chrome, wait: WebDriverWait) -> None
         """,
         select_el,
     )
+
+    buscar = wait.until(
+        EC.element_to_be_clickable(
+            (By.CSS_SELECTOR, "input[type='submit'][value='Buscar'], button[type='submit'][value='Buscar']")
+        )
+    )
+    try:
+        buscar.click()
+    except Exception:
+        js_click(driver, buscar)
+    print("Clicou em Buscar")
+
     time.sleep(0.8)
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".pesquisa-aluno-container")))
     print("Filtro de alunos ativos aplicado")

@@ -4,7 +4,7 @@ Script Selenium que:
 
 1. faz login no painel
 2. abre **Alunos → Pesquisa**
-3. filtra o select **status** para **ativos** (só gera relatório de estudantes ativos)
+3. filtra o select **status** para **ativos** e clica em **Buscar** (só gera relatório de estudantes ativos)
 4. para **cada aluno** da lista filtrada:
    - abre **Relatório do Coach**
    - aplica filtros (questões + mês + dia 1–15)
