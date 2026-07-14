@@ -9,7 +9,9 @@ Script Selenium que:
    - abre **Relatório do Coach**
    - aplica filtros (questões + mês + dia 1–15)
    - baixa o PDF
-5. avança a paginação, se existir
+   - marca sucesso ou falha
+5. ao fim do loop, **reprocessa os com erro** (até 3 tentativas no total por aluno)
+6. avança a paginação, se existir
 
 ## Setup
 

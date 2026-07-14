@@ -9,6 +9,7 @@ Fluxo por aluno (igual ao que você já fazia para um):
 5. Filtros (questões + mês + datas) → Gerar
 6. Acessar Relatório → Baixar
 7. Fecha a aba do relatório e passa para o próximo aluno
+8. Ao fim, reprocessa falhas (até 3 tentativas por aluno)
 
 Credenciais e pastas vêm do .env (veja .env.example).
 """
@@ -580,7 +581,8 @@ def gravar_log_resumo(
     fim: datetime,
     total_alunos: int,
     pdfs: list[str],
-    total_erro: int,
+    falhas: list[str],
+    resultados: list[dict] | None = None,
 ) -> Path:
     caminho = Path(PASTA_DOWNLOAD) / f"log_download_{inicio.strftime('%Y%m%d_%H%M%S')}.txt"
     linhas = [
@@ -590,7 +592,7 @@ def gravar_log_resumo(
         f"Duração: {formatar_duracao((fim - inicio).total_seconds())}",
         f"Alunos processados: {total_alunos}",
         f"PDFs baixados: {len(pdfs)}",
-        f"Falhas: {total_erro}",
+        f"Falhas finais: {len(falhas)}",
         f"Pasta: {PASTA_DOWNLOAD}",
         "",
         "Arquivos:",
@@ -600,6 +602,20 @@ def gravar_log_resumo(
     else:
         linhas.append("- (nenhum)")
 
+    linhas.extend(["", "Status por aluno:"])
+    if resultados:
+        for r in resultados:
+            status = "OK" if r["sucesso"] else "FALHA"
+            linhas.append(
+                f"- [{status}] {r['nome']} (tentativas: {r['tentativas']})"
+            )
+    else:
+        linhas.append("- (nenhum)")
+
+    if falhas:
+        linhas.extend(["", "Alunos com falha após todas as tentativas:"])
+        linhas.extend(f"- {nome}" for nome in falhas)
+
     texto = "\n".join(linhas) + "\n"
     caminho.write_text(texto, encoding="utf-8")
     return caminho
@@ -607,6 +623,7 @@ def gravar_log_resumo(
 
 def baixar_todos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     inicio = datetime.now()
+    max_tentativas = 3
     print(f"Processo iniciado em: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
 
     aba_principal = driver.current_window_handle
@@ -614,31 +631,70 @@ def baixar_todos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     if not nomes:
         fim = datetime.now()
         print("Nenhum aluno encontrado em /alunos/consulta.")
-        log = gravar_log_resumo(inicio, fim, 0, [], 0)
+        log = gravar_log_resumo(inicio, fim, 0, [], [], [])
         print(f"Log salvo em: {log}")
         return
 
-    pdfs: list[str] = []
-    total_erro = 0
+    # Flag de sucesso/falha por aluno
+    resultados: dict[str, dict] = {
+        nome: {"nome": nome, "sucesso": False, "arquivo": None, "tentativas": 0}
+        for nome in nomes
+    }
 
-    for i, nome in enumerate(nomes, start=1):
+    def processar_lote(lista: list[str], rodada: int) -> None:
+        total = len(lista)
+        for i, nome in enumerate(lista, start=1):
+            resultados[nome]["tentativas"] += 1
+            tentativa = resultados[nome]["tentativas"]
+            print("=" * 50)
+            print(
+                f"[rodada {rodada}] Aluno {i}/{total}: {nome} "
+                f"(tentativa {tentativa}/{max_tentativas})"
+            )
+            arquivo = processar_aluno(driver, wait, aba_principal, nome)
+            if arquivo:
+                resultados[nome]["sucesso"] = True
+                resultados[nome]["arquivo"] = arquivo
+                print(f"[{nome}] SUCESSO")
+            else:
+                resultados[nome]["sucesso"] = False
+                resultados[nome]["arquivo"] = None
+                print(f"[{nome}] FALHA")
+
+    # 1ª passagem: todos os alunos
+    processar_lote(nomes, rodada=1)
+
+    # Reprocessa só os com erro, até completar 3 tentativas
+    for rodada in range(2, max_tentativas + 1):
+        pendentes = [n for n in nomes if not resultados[n]["sucesso"]]
+        if not pendentes:
+            print("=" * 50)
+            print("Nenhuma falha restante — sem reprocessamento.")
+            break
         print("=" * 50)
-        print(f"Aluno {i}/{len(nomes)}: {nome}")
-        arquivo = processar_aluno(driver, wait, aba_principal, nome)
-        if arquivo:
-            pdfs.append(arquivo)
-        else:
-            total_erro += 1
+        print(
+            f"Reprocessando {len(pendentes)} aluno(s) com erro "
+            f"(rodada {rodada}/{max_tentativas})..."
+        )
+        processar_lote(pendentes, rodada=rodada)
+
+    pdfs = [r["arquivo"] for r in resultados.values() if r["sucesso"] and r["arquivo"]]
+    falhas = [r["nome"] for r in resultados.values() if not r["sucesso"]]
+    lista_resultados = [resultados[n] for n in nomes]
 
     fim = datetime.now()
-    log = gravar_log_resumo(inicio, fim, len(nomes), pdfs, total_erro)
+    log = gravar_log_resumo(inicio, fim, len(nomes), pdfs, falhas, lista_resultados)
 
     print("=" * 50)
     print(f"Início: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
     print(f"Fim:    {fim.strftime('%d/%m/%Y %H:%M:%S')}")
     print(f"Duração: {formatar_duracao((fim - inicio).total_seconds())}")
     print(f"PDFs baixados: {len(pdfs)}")
-    print(f"Falhas: {total_erro}")
+    print(f"Falhas finais: {len(falhas)}")
+    if falhas:
+        print("Alunos com falha:")
+        for nome in falhas:
+            print(f"- {nome} (tentativas: {resultados[nome]['tentativas']})")
     print(f"Arquivos em: {PASTA_DOWNLOAD}")
     print(f"Log salvo em: {log}")
 
