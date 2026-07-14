@@ -1,13 +1,14 @@
 """
-Baixa o Relatório do Coach no Tutory para TODOS os alunos da consulta.
+Baixa o Relatório do Coach no Tutory para os alunos ATIVOS da consulta.
 
 Fluxo por aluno (igual ao que você já fazia para um):
 1. Login
 2. Alunos → Pesquisa (/alunos/consulta)
-3. Opções do aluno → Relatório do Coach
-4. Filtros (questões + mês + datas) → Gerar
-5. Acessar Relatório → Baixar
-6. Fecha a aba do relatório e passa para o próximo aluno
+3. Filtro status = ativos (reduz a lista antes de gerar relatórios)
+4. Opções do aluno → Relatório do Coach
+5. Filtros (questões + mês + datas) → Gerar
+6. Acessar Relatório → Baixar
+7. Fecha a aba do relatório e passa para o próximo aluno
 
 Credenciais e pastas vêm do .env (veja .env.example).
 """
@@ -31,7 +32,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import Select, WebDriverWait
 
 load_dotenv()
 
@@ -220,11 +221,31 @@ def login(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     print("Login realizado")
 
 
+def filtrar_alunos_ativos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+    """Seleciona status=ativos antes de listar/abrir ações dos alunos."""
+    print("Filtrando alunos com status 'ativos'...")
+    select_el = wait.until(EC.presence_of_element_located((By.NAME, "status")))
+    Select(select_el).select_by_value("ativos")
+    # Garante que o change dispare mesmo se o Select nativo for interceptado por UI
+    driver.execute_script(
+        """
+        arguments[0].value = 'ativos';
+        arguments[0].dispatchEvent(new Event('change', {bubbles: true}));
+        arguments[0].dispatchEvent(new Event('input', {bubbles: true}));
+        """,
+        select_el,
+    )
+    time.sleep(0.8)
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".pesquisa-aluno-container")))
+    print("Filtro de alunos ativos aplicado")
+
+
 def abrir_pesquisa_alunos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     print("Abrindo pesquisa de alunos...")
     driver.get(URL_CONSULTA)
     wait.until(lambda d: "/alunos/consulta" in d.current_url)
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".pesquisa-aluno-container")))
+    wait.until(EC.presence_of_element_located((By.NAME, "status")))
+    filtrar_alunos_ativos(driver, wait)
     print("Pesquisa de alunos aberta")
 
 
