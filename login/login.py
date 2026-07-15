@@ -47,8 +47,8 @@ parser.add_argument(
     help=(
         "Escolha o período desejado:\n"
         "1 = Dia inicial: 01\n"
-        "    Dia Final: 15\n"
-        "2 = Dia inicial: 06\n"
+        "    \nDia Final: 15\n"
+        "\n2 = Dia inicial: 16\n"
         "    Dia Final: Último dia do mês (30 ou 31, e 28/29 em fevereiro)"
     ))
 args = parser.parse_args()
