@@ -17,9 +17,11 @@ Credenciais e pastas vêm do .env (veja .env.example).
 from __future__ import annotations
 
 import glob
+import argparse
 import os
 import time
 from datetime import datetime
+from calendar import monthrange
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,6 +38,21 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 load_dotenv()
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--periodo",
+    choices=["1", "2"],
+    required=True,
+    help=(
+        "Escolha o período desejado:\n"
+        "1 = Dia inicial: 01\n"
+        "    Dia Final: 15\n"
+        "2 = Dia inicial: 06\n"
+        "    Dia Final: Último dia do mês (30 ou 31, e 28/29 em fevereiro)"
+    ))
+args = parser.parse_args()
+
 
 URL_LOGIN = os.getenv("LOGIN_URL", "https://admin.tutory.com.br/login").strip()
 EMAIL = os.getenv("LOGIN_USER", "").strip()
@@ -433,8 +450,13 @@ def configurar_filtros_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, 
     js_click(driver, mes)
 
     hoje = datetime.now()
-    data_inicio = hoje.strftime("%Y-%m-01")
-    data_fim = hoje.strftime("%Y-%m-15")
+    if args.periodo == "1":
+        data_inicio = hoje.replace(day=1).strftime("%Y-%m-%d")
+        data_fim = hoje.replace(day=15).strftime("%Y-%m-%d")
+    else:
+        ultimo_dia = monthrange(hoje.year, hoje.month)[1]
+        data_inicio = hoje.replace(day=16).strftime("%Y-%m-%d")
+        data_fim = hoje.replace(day=ultimo_dia).strftime("%Y-%m-%d")
     print(f"[{nome}] Datas: {data_inicio} → {data_fim}")
 
     campo_inicio = wait.until(EC.visibility_of_element_located((By.ID, "relDataIni")))
