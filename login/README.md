@@ -28,7 +28,12 @@ Preencha `LOGIN_USER` e `LOGIN_PASSWORD` no `.env`.
 ## Executar
 
 ```bash
-python login.py
+python login.py --periodo 1
+# ou segunda quinzena:
+python login.py --periodo 2
+
+# teste: só o 1º aluno (validar PDF com gráficos)
+python login.py --periodo 1 --teste
 ```
 
 Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.pdf`.
