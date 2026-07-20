@@ -692,27 +692,33 @@ def renomear_download(caminho: str, nome_aluno: str) -> str:
 
 def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
     """
-    O gerador de PDF do Tutory ignora o canvas Chart.js em movimento.
-    Mantém o canvas e o Chart intactos (o botão Baixar depende deles), mas põe
-    uma imagem PNG sobreposta exatamente no mesmo local: o PDF captura a imagem.
+    O PDF falha especificamente no canvas #chart_questoes_dia.
+    Mantém o canvas/Chart intactos (o botão Baixar depende deles) e insere uma
+    imagem PNG no próprio container do gráfico — não em position:fixed no body.
     """
-    print(f"[{nome}] Criando sobreposição estática dos gráficos para o PDF...")
+    print(f"[{nome}] Aguardando #chart_questoes_dia para o PDF...")
 
     WebDriverWait(driver, CHART_WAIT).until(
         lambda d: d.execute_script(
-            "return !!(document.body && document.body.innerText"
-            " && document.body.innerText.length > 50)"
+            """
+            const target = document.getElementById('chart_questoes_dia');
+            if (!target) return false;
+            const canvas = target.tagName === 'CANVAS'
+              ? target
+              : target.querySelector('canvas');
+            return !!(canvas && canvas.width > 10 && canvas.height > 10);
+            """
         )
     )
-    time.sleep(5)  # espera o traço de entrada dos gráficos animados
+    # O Chart.js desenha os pontos antes das linhas; dá tempo para o traço final.
+    time.sleep(5)
 
-    convertidos = driver.execute_async_script(
+    convertido = driver.execute_async_script(
         """
         const done = arguments[0];
         (async () => {
-          let n = 0;
-          const existing = document.querySelectorAll('.tutory-chart-pdf-overlay');
-          existing.forEach(el => el.remove());
+          document.querySelectorAll('.tutory-chart-questoes-dia-overlay')
+            .forEach(el => el.remove());
 
           async function imageReady(url) {
             const img = new Image();
@@ -724,42 +730,64 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
             return img;
           }
 
-          const canvases = Array.from(document.querySelectorAll('canvas'));
-          for (const canvas of canvases) {
-            try {
-              const rect = canvas.getBoundingClientRect();
-              if (rect.width < 80 || rect.height < 60) continue;
-              const url = canvas.toDataURL('image/png', 1.0);
-              const check = await imageReady(url);
-              if (!check.naturalWidth) continue;
+          try {
+            const target = document.getElementById('chart_questoes_dia');
+            if (!target) return done(0);
+            const canvas = target.tagName === 'CANVAS'
+              ? target
+              : target.querySelector('canvas');
+            if (!canvas) return done(0);
 
-              const overlay = document.createElement('img');
-              overlay.className = 'tutory-chart-pdf-overlay';
-              overlay.src = url;
-              overlay.alt = '';
-              overlay.setAttribute('aria-hidden', 'true');
-              overlay.style.cssText = [
-                'position:fixed',
-                'left:' + rect.left + 'px',
-                'top:' + rect.top + 'px',
-                'width:' + rect.width + 'px',
-                'height:' + rect.height + 'px',
-                'z-index:2147483647',
-                'pointer-events:none',
-                'display:block'
-              ].join(';');
-              document.body.appendChild(overlay);
-              n++;
+            // Pede ao Chart.js o frame final antes de capturar o bitmap.
+            try {
+              const chart = window.Chart && Chart.getChart
+                ? Chart.getChart(canvas)
+                : null;
+              if (chart) {
+                if (chart.options) chart.options.animation = false;
+                if (typeof chart.stop === 'function') chart.stop();
+                if (typeof chart.update === 'function') chart.update('none');
+                if (typeof chart.draw === 'function') chart.draw();
+              }
             } catch (e) {}
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+            const url = canvas.toDataURL('image/png', 1.0);
+            const check = await imageReady(url);
+            if (!check.naturalWidth) return done(0);
+
+            const parent = canvas.parentElement;
+            if (!parent) return done(0);
+            const originalPosition = getComputedStyle(parent).position;
+            if (originalPosition === 'static') parent.style.position = 'relative';
+
+            const overlay = document.createElement('img');
+            overlay.className = 'tutory-chart-questoes-dia-overlay';
+            overlay.src = url;
+            overlay.alt = '';
+            overlay.setAttribute('aria-hidden', 'true');
+            overlay.style.cssText = [
+              'position:absolute',
+              'left:' + canvas.offsetLeft + 'px',
+              'top:' + canvas.offsetTop + 'px',
+              'width:' + canvas.offsetWidth + 'px',
+              'height:' + canvas.offsetHeight + 'px',
+              'z-index:10',
+              'pointer-events:none',
+              'display:block'
+            ].join(';');
+            parent.appendChild(overlay);
+            done(1);
+          } catch (e) {
+            done(0);
           }
-          done(n);
         })().catch(() => done(0));
         """
     )
 
     time.sleep(0.8)
-    print(f"[{nome}] Sobreposições PNG dos gráficos: {convertidos}")
-    return int(convertidos or 0)
+    print(f"[{nome}] PNG sobreposto a #chart_questoes_dia: {convertido}")
+    return int(convertido or 0)
 
 
 def acessar_baixar_relatorio(
