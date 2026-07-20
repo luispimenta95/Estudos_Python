@@ -50,7 +50,16 @@ parser.add_argument(
         "    \nDia Final: 15\n"
         "\n2 = Dia inicial: 16\n"
         "    Dia Final: Último dia do mês (30 ou 31, e 28/29 em fevereiro)"
-    ))
+    ),
+)
+parser.add_argument(
+    "--teste",
+    action="store_true",
+    help=(
+        "Modo teste: baixa o relatório só do primeiro aluno ativo "
+        "(útil para validar PDF com gráficos)."
+    ),
+)
 args = parser.parse_args()
 
 
@@ -862,7 +871,20 @@ def baixar_todos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     print(f"Processo iniciado em: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
 
     aba_principal = driver.current_window_handle
-    nomes = coletar_todos_alunos(driver, wait)
+
+    if args.teste:
+        # Só a 1ª página / 1º aluno — sem varrer a paginação inteira
+        abrir_pesquisa_alunos(driver, wait)
+        pagina = listar_alunos_visiveis(driver)
+        nomes = [pagina[0]["nome"]] if pagina else []
+        if nomes:
+            print(
+                f"Modo --teste: processando apenas o 1º aluno "
+                f"({nomes[0]}) para validar o PDF com gráficos"
+            )
+    else:
+        nomes = coletar_todos_alunos(driver, wait)
+
     if not nomes:
         fim = datetime.now()
         print("Nenhum aluno encontrado em /alunos/consulta.")
