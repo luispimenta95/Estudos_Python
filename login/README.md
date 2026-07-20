@@ -55,4 +55,4 @@ Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.p
 - Não versionar o `.env` com senha.
 - Se a lista de alunos não aparecer, confira se a conta vê alunos em `/alunos/consulta`.
 - Em erro por aluno, o script tira screenshot e segue para o próximo.
-- Antes de **Baixar**, o script espera a animação do Chart.js, congela o desenho **no mesmo canvas** (sem remover a tag — isso quebrava o download) e só então clica em Baixar. No log: `Gráficos estáticos no canvas`.
+- Antes de **Baixar**, o script espera a animação do Chart.js (pontos **e** linhas), força `showLine`/stroke estático, congela no mesmo canvas e baixa. No log: `Gráficos estáticos no canvas`.
