@@ -519,148 +519,242 @@ def configurar_filtros_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, 
     print(f"[{nome}] Relatório solicitado")
 
 
-def aguardar_grafico_panorama(
-    driver: webdriver.Chrome,
-    nome: str,
-    timeout: int | None = None,
-) -> None:
-    """
-    No fluxo manual o gráfico 'Acertos e Erros por Dia' (Breve Panorama)
-    aparece antes do PDF. Aqui esperamos canvas/SVG com tinta na aba do
-    relatório — sem checar containers vazios (isso gerava chart-empty).
-    """
-    timeout = REPORT_RENDER_TIMEOUT if timeout is None else timeout
-    print(f"[{nome}] Aguardando gráfico do panorama...")
-
-    WebDriverWait(driver, timeout).until(
-        lambda d: d.execute_script("return document.readyState") == "complete"
+def _status_chartjs(driver: webdriver.Chrome) -> dict:
+    """Diagnóstico: script chart.js no DOM + global Chart disponível."""
+    return driver.execute_script(
+        """
+        const scripts = Array.from(document.scripts || []);
+        const tag = scripts.find(s => (s.src || '').toLowerCase().includes('chart'));
+        const resources = (performance.getEntriesByType
+          ? performance.getEntriesByType('resource') : [])
+          .filter(e => (e.name || '').toLowerCase().includes('chart.js'));
+        const instances = (window.Chart && Chart.instances)
+          ? (Chart.instances instanceof Map
+              ? Chart.instances.size
+              : Object.keys(Chart.instances).length)
+          : 0;
+        return {
+          hasChartGlobal: typeof window.Chart === 'function'
+            || typeof window.Chart === 'object',
+          scriptSrc: tag ? tag.src : '',
+          scriptLoaded: !!(tag && tag.src),
+          resourceCount: resources.length,
+          instances: instances,
+          jqueryActive: (window.jQuery && jQuery.active) || 0
+        };
+        """
     )
 
-    # Desliga animação do Chart.js (se existir) e leva o panorama à vista
+
+def _forcar_chartjs_sem_animacao(driver: webdriver.Chrome) -> None:
     driver.execute_script(
         """
         try {
-          if (window.Chart && Chart.defaults) {
+          if (!window.Chart) return;
+          if (Chart.defaults) {
             Chart.defaults.animation = false;
             if (Chart.defaults.animations) {
               Object.keys(Chart.defaults.animations).forEach(k => {
                 Chart.defaults.animations[k] = false;
               });
             }
-            const instances = Chart.instances instanceof Map
-              ? [...Chart.instances.values()]
-              : Object.values(Chart.instances || {});
-            instances.forEach(c => {
-              try {
-                if (c.options) c.options.animation = false;
-                if (typeof c.update === 'function') c.update('none');
-              } catch (e) {}
-            });
           }
+          const instances = Chart.instances instanceof Map
+            ? [...Chart.instances.values()]
+            : Object.values(Chart.instances || {});
+          instances.forEach(c => {
+            try {
+              if (c.options) c.options.animation = false;
+              if (typeof c.resize === 'function') c.resize();
+              if (typeof c.update === 'function') c.update('none');
+            } catch (e) {}
+          });
         } catch (e) {}
 
-        const nodes = Array.from(document.querySelectorAll('h1,h2,h3,h4,p,div,span,strong'));
+        const nodes = Array.from(
+          document.querySelectorAll('h1,h2,h3,h4,p,div,span,strong,canvas')
+        );
         const alvo = nodes.find(el => {
           const t = (el.textContent || '').toLowerCase();
           return t.includes('acertos e erros') || t.includes('breve panorama');
         });
         if (alvo) alvo.scrollIntoView({block: 'center', behavior: 'instant'});
-        else window.scrollTo(0, Math.min(800, document.body.scrollHeight / 3));
+        // força lazy-render: sobe e desce um pouco
+        window.scrollBy(0, 200);
+        window.scrollBy(0, -200);
         """
     )
 
+
+def _grafico_panorama_pronto(driver: webdriver.Chrome) -> dict:
+    """
+    Pronto quando Chart.js existe e há canvas com tinta (ou SVG equivalente).
+    O aviso MIME binary/octet-stream do chart.js NÃO impede o load no Chrome
+    (a mensagem diz que o script 'foi carregado apesar do MIME').
+    """
+    return driver.execute_script(
+        """
+        const out = {
+          ok: false, reason: 'waiting',
+          hasChart: false, instances: 0, canvases: 0, svgs: 0, ink: 0
+        };
+
+        if (window.jQuery && jQuery.active > 0) {
+          out.reason = 'jquery';
+          return out;
+        }
+
+        out.hasChart = typeof window.Chart === 'function'
+          || typeof window.Chart === 'object';
+        if (!out.hasChart) {
+          out.reason = 'chartjs-nao-carregou';
+          return out;
+        }
+
+        const instances = Chart.instances instanceof Map
+          ? [...Chart.instances.values()]
+          : Object.values(Chart.instances || {});
+        out.instances = instances.length;
+        const comDados = instances.some(c => {
+          try {
+            return (c.data && c.data.datasets || []).some(
+              d => Array.isArray(d.data) && d.data.length > 0
+            );
+          } catch (e) { return false; }
+        });
+
+        function canvasTemTinta(c) {
+          const r = c.getBoundingClientRect();
+          if (r.width < 80 || r.height < 60 || c.width < 10 || c.height < 10) {
+            return 0;
+          }
+          try {
+            const ctx = c.getContext('2d', { willReadFrequently: true });
+            if (!ctx) return 0;
+            // amostra centro + cantos (área do gráfico não fica só no 0,0)
+            const pts = [
+              [0, 0],
+              [Math.floor(c.width / 2), Math.floor(c.height / 2)],
+              [Math.floor(c.width * 0.2), Math.floor(c.height * 0.2)],
+              [Math.floor(c.width * 0.7), Math.floor(c.height * 0.4)]
+            ];
+            let ink = 0;
+            for (const [x0, y0] of pts) {
+              const w = Math.min(60, c.width - x0);
+              const h = Math.min(60, c.height - y0);
+              if (w < 5 || h < 5) continue;
+              const data = ctx.getImageData(x0, y0, w, h).data;
+              for (let i = 3; i < data.length; i += 16) {
+                if (data[i] > 0) {
+                  // ignora quase-branco puro: procura cor das linhas
+                  const a = data[i], r = data[i-3], g = data[i-2], b = data[i-1];
+                  if (a > 0 && (r < 250 || g < 250 || b < 250)) ink++;
+                  if (ink > 20) return ink;
+                }
+              }
+            }
+            return ink;
+          } catch (e) {
+            return 999; // canvas tainted → assume ok
+          }
+        }
+
+        const canvases = Array.from(document.querySelectorAll('canvas'));
+        out.canvases = canvases.length;
+        let maxInk = 0;
+        for (const c of canvases) {
+          maxInk = Math.max(maxInk, canvasTemTinta(c));
+        }
+        out.ink = maxInk;
+
+        const svgs = Array.from(document.querySelectorAll('svg')).filter(s => {
+          const r = s.getBoundingClientRect();
+          return r.width >= 120 && r.height >= 80;
+        });
+        out.svgs = svgs.length;
+        const svgOk = svgs.some(
+          s => s.querySelectorAll('path, circle, line, polyline, text').length >= 8
+        );
+
+        if (maxInk > 20 || svgOk || (comDados && out.canvases > 0)) {
+          out.ok = true;
+          out.reason = maxInk > 20 ? 'canvas' : (svgOk ? 'svg' : 'chart-instances');
+          return out;
+        }
+
+        if (out.instances === 0) out.reason = 'chart-sem-instancia';
+        else if (!comDados) out.reason = 'chart-sem-dados';
+        else out.reason = 'grafico-vazio';
+        return out;
+        """
+    )
+
+
+def aguardar_grafico_panorama(
+    driver: webdriver.Chrome,
+    nome: str,
+    timeout: int | None = None,
+) -> None:
+    """
+    Espera Chart.js (static.tutory.com.br/.../chart.js) + pintura do
+    'Acertos e Erros por Dia' antes do PDF.
+    O aviso MIME binary/octet-stream é só warning — o Chrome carrega mesmo assim.
+    """
+    timeout = REPORT_RENDER_TIMEOUT if timeout is None else timeout
+    print(f"[{nome}] Aguardando Chart.js + gráfico do panorama...")
+
+    WebDriverWait(driver, timeout).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
     fim = time.time() + timeout
+    chart_logado = False
     pronto_desde: float | None = None
-    estabilizar_s = 2.0
+    estabilizar_s = 2.5
     ultimo = "…"
 
     while time.time() < fim:
-        status = driver.execute_script(
-            """
-            const out = {ok: false, reason: 'waiting', canvases: 0, svgs: 0};
+        diag = _status_chartjs(driver)
+        if diag.get("hasChartGlobal") and not chart_logado:
+            print(
+                f"[{nome}] Chart.js OK "
+                f"(instances={diag.get('instances', 0)}, "
+                f"src={diag.get('scriptSrc') or 'global'})"
+            )
+            chart_logado = True
+            _forcar_chartjs_sem_animacao(driver)
 
-            if (window.jQuery && jQuery.active > 0) {
-              out.reason = 'jquery';
-              return out;
-            }
-
-            const bodyText = (document.body && document.body.innerText || '').toLowerCase();
-            const temPanorama = bodyText.includes('breve panorama')
-              || bodyText.includes('acertos e erros');
-
-            // Canvas com pixels pintados (Chart.js etc.)
-            const canvases = Array.from(document.querySelectorAll('canvas')).filter(c => {
-              const r = c.getBoundingClientRect();
-              return r.width >= 80 && r.height >= 60 && c.width > 10 && c.height > 10;
-            });
-            out.canvases = canvases.length;
-            let canvasOk = false;
-            for (const c of canvases) {
-              try {
-                const ctx = c.getContext('2d', { willReadFrequently: true });
-                if (!ctx) continue;
-                const w = Math.min(c.width, 120);
-                const h = Math.min(c.height, 120);
-                const data = ctx.getImageData(0, 0, w, h).data;
-                let ink = 0;
-                for (let i = 3; i < data.length; i += 8) {
-                  if (data[i] > 0) ink++;
-                  if (ink > 30) break;
-                }
-                if (ink > 30) { canvasOk = true; break; }
-              } catch (e) {
-                // tainted: assume desenhado
-                canvasOk = true;
-                break;
-              }
-            }
-
-            // SVG com traços suficientes (ApexCharts / Highcharts)
-            const svgs = Array.from(document.querySelectorAll('svg')).filter(s => {
-              const r = s.getBoundingClientRect();
-              return r.width >= 120 && r.height >= 80;
-            });
-            out.svgs = svgs.length;
-            let svgOk = false;
-            for (const s of svgs) {
-              const marks = s.querySelectorAll(
-                'path, circle, line, polyline, rect, text'
-              ).length;
-              if (marks >= 8) { svgOk = true; break; }
-            }
-
-            if (canvasOk || svgOk) {
-              out.ok = true;
-              out.reason = canvasOk ? 'canvas' : 'svg';
-              return out;
-            }
-
-            if (!temPanorama) out.reason = 'sem-panorama';
-            else if (canvases.length === 0 && svgs.length === 0) out.reason = 'sem-grafico';
-            else out.reason = 'grafico-vazio';
-            return out;
-            """
-        )
+        status = _grafico_panorama_pronto(driver)
         ultimo = (status or {}).get("reason", "…")
+
         if status and status.get("ok"):
             if pronto_desde is None:
                 pronto_desde = time.time()
+                _forcar_chartjs_sem_animacao(driver)
                 print(
                     f"[{nome}] Gráfico detectado ({status.get('reason')}: "
-                    f"{status.get('canvases', 0)} canvas, "
-                    f"{status.get('svgs', 0)} svg); estabilizando..."
+                    f"ink={status.get('ink', 0)}, "
+                    f"canvas={status.get('canvases', 0)}, "
+                    f"instances={status.get('instances', 0)}); estabilizando..."
                 )
             elif time.time() - pronto_desde >= estabilizar_s:
                 driver.execute_script("window.scrollTo(0, 0);")
+                time.sleep(0.3)
                 print(f"[{nome}] Gráfico pronto para PDF")
                 return
         else:
             pronto_desde = None
+            # se Chart já existe mas ainda sem dados/tinta, reforce update
+            if diag.get("hasChartGlobal"):
+                _forcar_chartjs_sem_animacao(driver)
         time.sleep(0.4)
 
+    diag = _status_chartjs(driver)
     print(
         f"[{nome}] AVISO: timeout ({timeout}s) no gráfico "
-        f"(último: {ultimo}); baixando mesmo assim"
+        f"(último: {ultimo}; Chart.js="
+        f"{'sim' if diag.get('hasChartGlobal') else 'não'}; "
+        f"instances={diag.get('instances', 0)}); baixando mesmo assim"
     )
 
 
