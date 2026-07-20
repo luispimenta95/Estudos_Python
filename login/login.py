@@ -69,6 +69,8 @@ CHROME_USER_DATA = os.getenv(
 HEADLESS = os.getenv("HEADLESS", "0").strip() in {"1", "true", "True", "yes"}
 TIMEOUT = int(os.getenv("TIMEOUT", "25"))
 DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "90"))
+# Tempo máximo para canvas/SVG/imagens do relatório renderizarem antes do PDF
+REPORT_RENDER_TIMEOUT = int(os.getenv("REPORT_RENDER_TIMEOUT", "60"))
 
 URL_CONSULTA = "https://admin.tutory.com.br/alunos/consulta"
 
@@ -484,6 +486,212 @@ def configurar_filtros_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, 
     print(f"[{nome}] Relatório solicitado")
 
 
+def _desabilitar_animacoes_e_forcar_render(driver: webdriver.Chrome) -> None:
+    """Desliga animações de charts e percorre a página para forçar lazy-render."""
+    driver.execute_script(
+        """
+        try {
+          if (window.Chart) {
+            if (Chart.defaults) {
+              Chart.defaults.animation = false;
+              if (Chart.defaults.animations) {
+                Object.keys(Chart.defaults.animations).forEach(k => {
+                  Chart.defaults.animations[k] = false;
+                });
+              }
+            }
+            const instances = Chart.instances instanceof Map
+              ? [...Chart.instances.values()]
+              : Object.values(Chart.instances || {});
+            instances.forEach(c => {
+              try {
+                if (c.options) c.options.animation = false;
+                if (typeof c.update === 'function') c.update('none');
+              } catch (e) {}
+            });
+          }
+          if (window.Highcharts) {
+            Highcharts.setOptions({
+              chart: { animation: false },
+              plotOptions: { series: { animation: false } }
+            });
+            (Highcharts.charts || []).forEach(ch => {
+              if (!ch) return;
+              try { ch.reflow(); } catch (e) {}
+            });
+          }
+          if (window.Apex) {
+            Apex.chart = Object.assign({}, Apex.chart || {}, {
+              animations: { enabled: false }
+            });
+          }
+          if (window.Plotly && document.querySelectorAll) {
+            document.querySelectorAll('.js-plotly-plot').forEach(el => {
+              try { Plotly.Plots.resize(el); } catch (e) {}
+            });
+          }
+        } catch (e) {}
+
+        const h = Math.max(
+          document.body ? document.body.scrollHeight : 0,
+          document.documentElement ? document.documentElement.scrollHeight : 0
+        );
+        const step = Math.max(200, Math.floor((window.innerHeight || 800) * 0.8));
+        window.scrollTo(0, 0);
+        for (let y = 0; y < h; y += step) {
+          window.scrollTo(0, y);
+        }
+        window.scrollTo(0, 0);
+        """
+    )
+
+
+def _relatorio_graficos_prontos(driver: webdriver.Chrome) -> dict:
+    """
+    Verifica se imagens/canvas/SVG de gráficos já pintaram.
+    Retorna dict {ok, reason, canvases, images}.
+    """
+    return driver.execute_script(
+        """
+        const out = {ok: false, reason: 'unknown', canvases: 0, images: 0};
+
+        if (document.readyState !== 'complete') {
+          out.reason = 'readyState';
+          return out;
+        }
+
+        if (window.jQuery && jQuery.active > 0) {
+          out.reason = 'jquery';
+          return out;
+        }
+
+        const loadingSel = [
+          '.loading:not([style*="display: none"])',
+          '.spinner',
+          '.chart-loading',
+          '[data-loading="true"]',
+          '.pace-running'
+        ].join(',');
+        const loaders = Array.from(document.querySelectorAll(loadingSel)).filter(el => {
+          try {
+            const s = getComputedStyle(el);
+            return s.display !== 'none' && s.visibility !== 'hidden'
+              && Number(s.opacity) > 0 && el.offsetWidth > 0 && el.offsetHeight > 0;
+          } catch (e) { return false; }
+        });
+        if (loaders.length) {
+          out.reason = 'loading';
+          return out;
+        }
+
+        const imgs = Array.from(document.images || []);
+        out.images = imgs.length;
+        if (imgs.some(img => {
+          const src = img.currentSrc || img.src || '';
+          if (!src || src.startsWith('data:')) return false;
+          return !img.complete || img.naturalWidth === 0;
+        })) {
+          out.reason = 'images';
+          return out;
+        }
+
+        const canvases = Array.from(document.querySelectorAll('canvas'));
+        out.canvases = canvases.length;
+        for (const c of canvases) {
+          const rect = c.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          if (c.width < 2 || c.height < 2) {
+            out.reason = 'canvas-size';
+            return out;
+          }
+          try {
+            const ctx = c.getContext('2d', { willReadFrequently: true });
+            if (!ctx) continue;
+            const w = Math.min(c.width, 80);
+            const h = Math.min(c.height, 80);
+            const data = ctx.getImageData(0, 0, w, h).data;
+            let ink = false;
+            for (let i = 3; i < data.length; i += 16) {
+              if (data[i] > 0) { ink = true; break; }
+            }
+            if (!ink) {
+              out.reason = 'canvas-empty';
+              return out;
+            }
+          } catch (e) {
+            // canvas cross-origin: assume já desenhado
+          }
+        }
+
+        const chartRoots = document.querySelectorAll(
+          '.highcharts-container, .apexcharts-canvas, .js-plotly-plot, '
+          + '.chartjs-render-monitor, [class*="chart-container"], [id*="chart"]'
+        );
+        for (const root of chartRoots) {
+          const rect = root.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          if (!root.querySelector('canvas, svg, img')) {
+            out.reason = 'chart-empty';
+            return out;
+          }
+        }
+
+        out.ok = true;
+        out.reason = 'ready';
+        return out;
+        """
+    )
+
+
+def aguardar_relatorio_pronto(
+    driver: webdriver.Chrome,
+    nome: str,
+    timeout: int | None = None,
+) -> None:
+    """
+    O PDF do Tutory captura a página no clique de #btn_save.
+    Se baixar cedo demais, o texto sai certo mas os gráficos ficam em branco.
+    """
+    timeout = REPORT_RENDER_TIMEOUT if timeout is None else timeout
+    print(f"[{nome}] Aguardando gráficos do relatório renderizarem...")
+
+    WebDriverWait(driver, timeout).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
+    _desabilitar_animacoes_e_forcar_render(driver)
+    time.sleep(0.4)
+
+    fim = time.time() + timeout
+    pronto_desde: float | None = None
+    estabilizar_s = 1.5
+    ultimo_motivo = "…"
+
+    while time.time() < fim:
+        status = _relatorio_graficos_prontos(driver)
+        ultimo_motivo = (status or {}).get("reason", "…")
+        if status and status.get("ok"):
+            if pronto_desde is None:
+                pronto_desde = time.time()
+                # reforça update sem animação quando os canvas já têm tinta
+                _desabilitar_animacoes_e_forcar_render(driver)
+            elif time.time() - pronto_desde >= estabilizar_s:
+                print(
+                    f"[{nome}] Relatório pronto "
+                    f"({status.get('canvases', 0)} canvas, "
+                    f"{status.get('images', 0)} imgs)"
+                )
+                return
+        else:
+            pronto_desde = None
+        time.sleep(0.35)
+
+    print(
+        f"[{nome}] AVISO: timeout ({timeout}s) aguardando gráficos "
+        f"(último status: {ultimo_motivo}); baixando mesmo assim"
+    )
+
+
 def aguardar_novo_download(antes: set[str], timeout: int = DOWNLOAD_TIMEOUT) -> str | None:
     fim = time.time() + timeout
     while time.time() < fim:
@@ -535,6 +743,11 @@ def acessar_baixar_relatorio(
 
     print(f"[{nome}] Aba do relatório: {driver.current_url}")
     baixar = wait.until(EC.element_to_be_clickable((By.ID, "btn_save")))
+    # Espera charts/imagens: baixar cedo demais gera PDF sem gráficos
+    aguardar_relatorio_pronto(driver, nome)
+    # Garante foco no topo (html2canvas / print captura o estado atual)
+    driver.execute_script("window.scrollTo(0, 0);")
+    time.sleep(0.3)
     js_click(driver, baixar)
     print(f"[{nome}] Download iniciado")
 
