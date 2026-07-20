@@ -81,6 +81,8 @@ CHROME_USER_DATA = os.getenv(
 HEADLESS = os.getenv("HEADLESS", "0").strip() in {"1", "true", "True", "yes"}
 TIMEOUT = int(os.getenv("TIMEOUT", "25"))
 DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "90"))
+# Espera o gráfico (canvas/SVG) na aba do relatório antes de Baixar
+REPORT_RENDER_TIMEOUT = int(os.getenv("REPORT_RENDER_TIMEOUT", "45"))
 
 URL_CONSULTA = "https://admin.tutory.com.br/alunos/consulta"
 
@@ -517,6 +519,151 @@ def configurar_filtros_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, 
     print(f"[{nome}] Relatório solicitado")
 
 
+def aguardar_grafico_panorama(
+    driver: webdriver.Chrome,
+    nome: str,
+    timeout: int | None = None,
+) -> None:
+    """
+    No fluxo manual o gráfico 'Acertos e Erros por Dia' (Breve Panorama)
+    aparece antes do PDF. Aqui esperamos canvas/SVG com tinta na aba do
+    relatório — sem checar containers vazios (isso gerava chart-empty).
+    """
+    timeout = REPORT_RENDER_TIMEOUT if timeout is None else timeout
+    print(f"[{nome}] Aguardando gráfico do panorama...")
+
+    WebDriverWait(driver, timeout).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
+    # Desliga animação do Chart.js (se existir) e leva o panorama à vista
+    driver.execute_script(
+        """
+        try {
+          if (window.Chart && Chart.defaults) {
+            Chart.defaults.animation = false;
+            if (Chart.defaults.animations) {
+              Object.keys(Chart.defaults.animations).forEach(k => {
+                Chart.defaults.animations[k] = false;
+              });
+            }
+            const instances = Chart.instances instanceof Map
+              ? [...Chart.instances.values()]
+              : Object.values(Chart.instances || {});
+            instances.forEach(c => {
+              try {
+                if (c.options) c.options.animation = false;
+                if (typeof c.update === 'function') c.update('none');
+              } catch (e) {}
+            });
+          }
+        } catch (e) {}
+
+        const nodes = Array.from(document.querySelectorAll('h1,h2,h3,h4,p,div,span,strong'));
+        const alvo = nodes.find(el => {
+          const t = (el.textContent || '').toLowerCase();
+          return t.includes('acertos e erros') || t.includes('breve panorama');
+        });
+        if (alvo) alvo.scrollIntoView({block: 'center', behavior: 'instant'});
+        else window.scrollTo(0, Math.min(800, document.body.scrollHeight / 3));
+        """
+    )
+
+    fim = time.time() + timeout
+    pronto_desde: float | None = None
+    estabilizar_s = 2.0
+    ultimo = "…"
+
+    while time.time() < fim:
+        status = driver.execute_script(
+            """
+            const out = {ok: false, reason: 'waiting', canvases: 0, svgs: 0};
+
+            if (window.jQuery && jQuery.active > 0) {
+              out.reason = 'jquery';
+              return out;
+            }
+
+            const bodyText = (document.body && document.body.innerText || '').toLowerCase();
+            const temPanorama = bodyText.includes('breve panorama')
+              || bodyText.includes('acertos e erros');
+
+            // Canvas com pixels pintados (Chart.js etc.)
+            const canvases = Array.from(document.querySelectorAll('canvas')).filter(c => {
+              const r = c.getBoundingClientRect();
+              return r.width >= 80 && r.height >= 60 && c.width > 10 && c.height > 10;
+            });
+            out.canvases = canvases.length;
+            let canvasOk = false;
+            for (const c of canvases) {
+              try {
+                const ctx = c.getContext('2d', { willReadFrequently: true });
+                if (!ctx) continue;
+                const w = Math.min(c.width, 120);
+                const h = Math.min(c.height, 120);
+                const data = ctx.getImageData(0, 0, w, h).data;
+                let ink = 0;
+                for (let i = 3; i < data.length; i += 8) {
+                  if (data[i] > 0) ink++;
+                  if (ink > 30) break;
+                }
+                if (ink > 30) { canvasOk = true; break; }
+              } catch (e) {
+                // tainted: assume desenhado
+                canvasOk = true;
+                break;
+              }
+            }
+
+            // SVG com traços suficientes (ApexCharts / Highcharts)
+            const svgs = Array.from(document.querySelectorAll('svg')).filter(s => {
+              const r = s.getBoundingClientRect();
+              return r.width >= 120 && r.height >= 80;
+            });
+            out.svgs = svgs.length;
+            let svgOk = false;
+            for (const s of svgs) {
+              const marks = s.querySelectorAll(
+                'path, circle, line, polyline, rect, text'
+              ).length;
+              if (marks >= 8) { svgOk = true; break; }
+            }
+
+            if (canvasOk || svgOk) {
+              out.ok = true;
+              out.reason = canvasOk ? 'canvas' : 'svg';
+              return out;
+            }
+
+            if (!temPanorama) out.reason = 'sem-panorama';
+            else if (canvases.length === 0 && svgs.length === 0) out.reason = 'sem-grafico';
+            else out.reason = 'grafico-vazio';
+            return out;
+            """
+        )
+        ultimo = (status or {}).get("reason", "…")
+        if status and status.get("ok"):
+            if pronto_desde is None:
+                pronto_desde = time.time()
+                print(
+                    f"[{nome}] Gráfico detectado ({status.get('reason')}: "
+                    f"{status.get('canvases', 0)} canvas, "
+                    f"{status.get('svgs', 0)} svg); estabilizando..."
+                )
+            elif time.time() - pronto_desde >= estabilizar_s:
+                driver.execute_script("window.scrollTo(0, 0);")
+                print(f"[{nome}] Gráfico pronto para PDF")
+                return
+        else:
+            pronto_desde = None
+        time.sleep(0.4)
+
+    print(
+        f"[{nome}] AVISO: timeout ({timeout}s) no gráfico "
+        f"(último: {ultimo}); baixando mesmo assim"
+    )
+
+
 def aguardar_novo_download(antes: set[str], timeout: int = DOWNLOAD_TIMEOUT) -> str | None:
     fim = time.time() + timeout
     while time.time() < fim:
@@ -568,6 +715,8 @@ def acessar_baixar_relatorio(
 
     print(f"[{nome}] Aba do relatório: {driver.current_url}")
     baixar = wait.until(EC.element_to_be_clickable((By.ID, "btn_save")))
+    # O botão aparece antes do gráfico "Acertos e Erros por Dia" pintar
+    aguardar_grafico_panorama(driver, nome)
     js_click(driver, baixar)
     print(f"[{nome}] Download iniciado")
 

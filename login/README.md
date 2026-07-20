@@ -43,4 +43,5 @@ Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.p
 - Não versionar o `.env` com senha.
 - Se a lista de alunos não aparecer, confira se a conta vê alunos em `/alunos/consulta`.
 - Em erro por aluno, o script tira screenshot e segue para o próximo.
-- Há um `sleep(2)` antes de clicar em **Gerar** no relatório.
+- Há um `sleep(2)` antes de clicar em **Gerar**.
+- Na aba do relatório, o script espera o gráfico **Acertos e Erros por Dia** (canvas/SVG com tinta) antes de **Baixar**. Ajuste `REPORT_RENDER_TIMEOUT` se precisar.
