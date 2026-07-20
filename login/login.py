@@ -56,7 +56,7 @@ parser.add_argument(
     "--teste",
     action="store_true",
     help=(
-        "Modo teste: baixa o relatório só do primeiro aluno ativo "
+        "Modo teste: baixa o relatório só da aluna Marianny Carvalho "
         "(útil para validar PDF com gráficos)."
     ),
 )
@@ -66,6 +66,9 @@ args = parser.parse_args()
 URL_LOGIN = os.getenv("LOGIN_URL", "https://admin.tutory.com.br/login").strip()
 EMAIL = os.getenv("LOGIN_USER", "").strip()
 SENHA = os.getenv("LOGIN_PASSWORD", "").strip()
+
+# Aluna usada no modo --teste (match parcial no nome da lista)
+ALUNA_TESTE = "Marianny Carvalho"
 
 PASTA_DOWNLOAD = os.getenv(
     "PASTA_DOWNLOAD",
@@ -359,6 +362,26 @@ def coletar_todos_alunos(driver: webdriver.Chrome, wait: WebDriverWait) -> list[
 
     print(f"Total de alunos encontrados: {len(nomes)}")
     return nomes
+
+
+def encontrar_aluno_por_trecho(
+    driver: webdriver.Chrome, wait: WebDriverWait, trecho: str
+) -> str | None:
+    """Varre a lista filtrada e devolve o nome completo que contém o trecho."""
+    alvo = trecho.casefold().strip()
+    abrir_pesquisa_alunos(driver, wait)
+    pagina = 1
+
+    while True:
+        pagina_atual = listar_alunos_visiveis(driver)
+        print(f"Buscando '{trecho}' na página {pagina}: {len(pagina_atual)} aluno(s)")
+        for aluno in pagina_atual:
+            if alvo in aluno["nome"].casefold():
+                return aluno["nome"]
+        if not ir_para_proxima_pagina(driver, wait):
+            break
+        pagina += 1
+    return None
 
 
 def localizar_card_por_nome(driver: webdriver.Chrome, wait: WebDriverWait, nome: str):
@@ -873,15 +896,15 @@ def baixar_todos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     aba_principal = driver.current_window_handle
 
     if args.teste:
-        # Só a 1ª página / 1º aluno — sem varrer a paginação inteira
-        abrir_pesquisa_alunos(driver, wait)
-        pagina = listar_alunos_visiveis(driver)
-        nomes = [pagina[0]["nome"]] if pagina else []
+        nome_teste = encontrar_aluno_por_trecho(driver, wait, ALUNA_TESTE)
+        nomes = [nome_teste] if nome_teste else []
         if nomes:
             print(
-                f"Modo --teste: processando apenas o 1º aluno "
-                f"({nomes[0]}) para validar o PDF com gráficos"
+                f"Modo --teste: processando apenas {nomes[0]} "
+                f"para validar o PDF com gráficos"
             )
+        else:
+            print(f"Modo --teste: aluna '{ALUNA_TESTE}' não encontrada na lista.")
     else:
         nomes = coletar_todos_alunos(driver, wait)
 
