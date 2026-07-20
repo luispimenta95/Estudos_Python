@@ -28,12 +28,7 @@ Preencha `LOGIN_USER` e `LOGIN_PASSWORD` no `.env`.
 ## Executar
 
 ```bash
-python login.py --periodo 1
-# ou segunda quinzena:
-python login.py --periodo 2
-
-# teste: só Marianny Carvalho (validar PDF com gráficos)
-python login.py --periodo 1 --teste
+python login.py
 ```
 
 Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.pdf`.
@@ -43,4 +38,3 @@ Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.p
 - Não versionar o `.env` com senha.
 - Se a lista de alunos não aparecer, confira se a conta vê alunos em `/alunos/consulta`.
 - Em erro por aluno, o script tira screenshot e segue para o próximo.
-- Antes de clicar em **Baixar**, o script espera os gráficos (canvas/SVG/imagens) renderizarem. Sem isso o PDF sai com texto ok e gráficos em branco. Ajuste `REPORT_RENDER_TIMEOUT` no `.env` se a rede for lenta.
