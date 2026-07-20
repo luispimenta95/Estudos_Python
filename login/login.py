@@ -194,18 +194,22 @@ def criar_driver() -> webdriver.Firefox:
     if HEADLESS:
         options.add_argument("-headless")
 
-    # Download automático de PDF (sem abrir o visualizador pdf.js)
+    # Download automático de PDF (Firefox; aba do relatório costuma ser about:blank)
     options.set_preference("browser.download.folderList", 2)
     options.set_preference("browser.download.dir", pasta)
     options.set_preference("browser.download.useDownloadDir", True)
     options.set_preference("browser.download.manager.showWhenStarting", False)
     options.set_preference("browser.download.alwaysOpenPanel", False)
+    options.set_preference("browser.download.always_ask_before_handling_new_types", False)
+    options.set_preference("browser.download.improvements_to_download_panel", False)
+    options.set_preference("browser.download.viewableInternally.enabledTypes", "")
     options.set_preference("pdfjs.disabled", True)
     options.set_preference(
         "browser.helperApps.neverAsk.saveToDisk",
-        "application/pdf,application/octet-stream,binary/octet-stream",
+        "application/pdf,application/x-pdf,application/octet-stream,binary/octet-stream",
     )
     options.set_preference("browser.helperApps.alwaysAsk.force", False)
+    options.set_preference("browser.download.forbid_open_with", True)
 
     try:
         driver = webdriver.Firefox(service=Service(), options=options)
@@ -623,16 +627,48 @@ def configurar_filtros_relatorio(driver: WebDriver, wait: WebDriverWait, nome: s
     print(f"[{nome}] Relatório solicitado")
 
 
-def aguardar_novo_download(antes: set[str], timeout: int = DOWNLOAD_TIMEOUT) -> str | None:
+def _listar_arquivos_download(pastas: list[Path]) -> set[str]:
+    arquivos: set[str] = set()
+    for pasta in pastas:
+        if not pasta.is_dir():
+            continue
+        arquivos.update(str(p) for p in pasta.glob("*") if p.is_file())
+    return arquivos
+
+
+def aguardar_novo_download(
+    antes: set[str],
+    timeout: int = DOWNLOAD_TIMEOUT,
+    pastas: list[str] | None = None,
+) -> str | None:
+    """Espera PDF novo. Firefox usa .part; também olha ~/Downloads como fallback."""
+    dirs = [Path(p).expanduser() for p in (pastas or [PASTA_DOWNLOAD])]
+    downloads_padrao = Path.home() / "Downloads"
+    if downloads_padrao.resolve() not in {d.resolve() for d in dirs}:
+        dirs.append(downloads_padrao)
+
     fim = time.time() + timeout
     while time.time() < fim:
-        atuais = set(glob.glob(str(Path(PASTA_DOWNLOAD) / "*")))
+        atuais = _listar_arquivos_download(dirs)
+        baixando = [
+            p
+            for p in atuais
+            if p.endswith(".part")
+            or p.endswith(".crdownload")
+            or p.endswith(".tmp")
+            or p.endswith(".download")
+        ]
         novos = [
             p
             for p in (atuais - antes)
-            if not p.endswith(".crdownload") and not p.endswith(".tmp")
+            if p not in baixando
+            and not Path(p).name.startswith(".")
+            and (
+                p.lower().endswith(".pdf")
+                or Path(p).suffix == ""
+                or "relat" in Path(p).name.lower()
+            )
         ]
-        baixando = [p for p in atuais if p.endswith(".crdownload") or p.endswith(".tmp")]
         if novos and not baixando:
             novos.sort(key=lambda p: os.path.getmtime(p), reverse=True)
             return novos[0]
@@ -656,16 +692,19 @@ def renomear_download(caminho: str, nome_aluno: str) -> str:
 
 def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
     """
-    O PDF do Tutory captura imagens estáticas, não canvas interativo (Chart.js).
-    Espera o Chart pintar e substitui cada <canvas> por <img> (toDataURL).
+    Gráficos Chart.js com movimento não entram bem no PDF.
+    Mantém o <canvas> (trocar por <img> quebrava o Baixar): espera a animação,
+    tira snapshot, destroy() da instância e redesenha a imagem no mesmo canvas.
     """
-    print(f"[{nome}] Preparando gráficos interativos para o PDF...")
+    print(f"[{nome}] Preparando gráficos animados para o PDF...")
 
     WebDriverWait(driver, CHART_WAIT).until(
-        lambda d: d.execute_script("return document.readyState") == "complete"
+        lambda d: d.execute_script(
+            "return !!(document.body && document.body.innerText"
+            " && document.body.innerText.length > 50)"
+        )
     )
 
-    # 1) espera Chart.js + ao menos um canvas (ou esgota o tempo)
     fim = time.time() + CHART_WAIT
     while time.time() < fim:
         pronto = driver.execute_script(
@@ -674,23 +713,29 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
               || typeof window.Chart === 'object';
             const canvases = document.querySelectorAll('canvas').length;
             const jq = (window.jQuery && jQuery.active) || 0;
-            return {hasChart, canvases, jq};
+            let instances = 0;
+            if (hasChart && Chart.instances) {
+              instances = Chart.instances instanceof Map
+                ? Chart.instances.size
+                : Object.keys(Chart.instances).length;
+            }
+            return {hasChart, canvases, instances, jq};
             """
         )
-        if pronto.get("jq", 0) == 0 and (
-            pronto.get("hasChart") or pronto.get("canvases", 0) > 0
+        if (
+            pronto.get("jq", 0) == 0
+            and pronto.get("hasChart")
+            and pronto.get("canvases", 0) > 0
         ):
             print(
-                f"[{nome}] Chart.js="
-                f"{'sim' if pronto.get('hasChart') else 'não'}, "
-                f"canvas={pronto.get('canvases', 0)}"
+                f"[{nome}] Chart.js OK — canvas={pronto.get('canvases')}, "
+                f"instances={pronto.get('instances')}"
             )
             break
         time.sleep(0.3)
     else:
         print(f"[{nome}] AVISO: Chart.js/canvas não detectados a tempo")
 
-    # 2) leva o panorama à vista e dá tempo de pintar
     driver.execute_script(
         """
         const el = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,span,p,strong'))
@@ -701,77 +746,102 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
         if (el) el.scrollIntoView({block: 'center', behavior: 'instant'});
         """
     )
-    time.sleep(3)
+    # tempo para animação de entrada terminar
+    time.sleep(3.0)
 
-    # 3) desliga animação e congela canvas → img
-    convertidos = driver.execute_script(
+    convertidos = driver.execute_async_script(
         """
-        let n = 0;
+        const done = arguments[0];
+        (async () => {
+          let n = 0;
 
-        function paraImg(canvas, url) {
-          if (!canvas || !canvas.parentNode) return false;
-          const rect = canvas.getBoundingClientRect();
-          if (rect.width < 8 || rect.height < 8) return false;
-          const img = document.createElement('img');
-          img.src = url;
-          img.alt = 'grafico';
-          img.className = ((canvas.className || '') + ' chart-frozen').trim();
-          img.style.width = canvas.style.width || (rect.width + 'px');
-          img.style.height = canvas.style.height || (rect.height + 'px');
-          img.style.maxWidth = '100%';
-          img.style.display = 'block';
-          canvas.parentNode.replaceChild(img, canvas);
-          return true;
-        }
+          async function loadImg(url) {
+            const img = new Image();
+            img.src = url;
+            await new Promise((res, rej) => {
+              img.onload = res;
+              img.onerror = rej;
+            });
+            return img;
+          }
 
-        try {
-          if (window.Chart) {
-            if (Chart.defaults) Chart.defaults.animation = false;
-            const instances = Chart.instances instanceof Map
+          function listCharts() {
+            if (!window.Chart || !Chart.instances) return [];
+            return Chart.instances instanceof Map
               ? [...Chart.instances.values()]
               : Object.values(Chart.instances || {});
-            instances.forEach(chart => {
-              try {
-                if (chart.options) chart.options.animation = false;
-                if (typeof chart.resize === 'function') chart.resize();
-                if (typeof chart.update === 'function') chart.update('none');
-                const canvas = chart.canvas || (chart.ctx && chart.ctx.canvas);
-                if (!canvas) return;
-                const url = (typeof chart.toBase64Image === 'function')
-                  ? chart.toBase64Image('image/png', 1)
-                  : canvas.toDataURL('image/png');
-                if (paraImg(canvas, url)) n++;
-              } catch (e) {}
-            });
           }
-        } catch (e) {}
 
-        Array.from(document.querySelectorAll('canvas')).forEach(canvas => {
           try {
-            if (paraImg(canvas, canvas.toDataURL('image/png'))) n++;
+            if (window.Chart && Chart.defaults) {
+              Chart.defaults.animation = false;
+              Chart.defaults.animations = false;
+            }
           } catch (e) {}
-        });
 
-        return n;
+          const charts = listCharts().filter(Boolean);
+          for (const chart of charts) {
+            try {
+              if (chart.options) {
+                chart.options.animation = false;
+                chart.options.animations = false;
+              }
+              if (typeof chart.update === 'function') chart.update('none');
+            } catch (e) {}
+          }
+
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          // espera animating=false
+          for (let i = 0; i < 40; i++) {
+            const anim = listCharts().some(c => c && (c.animating || c._animating));
+            if (!anim) break;
+            await new Promise(r => setTimeout(r, 100));
+          }
+
+          for (const chart of listCharts()) {
+            try {
+              const canvas = chart.canvas || (chart.ctx && chart.ctx.canvas);
+              if (!canvas) continue;
+              const url = (typeof chart.toBase64Image === 'function')
+                ? chart.toBase64Image('image/png', 1)
+                : canvas.toDataURL('image/png');
+              const img = await loadImg(url);
+              const w = canvas.width, h = canvas.height;
+              const cssW = canvas.style.width, cssH = canvas.style.height;
+              try { chart.destroy(); } catch (e) {}
+              // restore size (destroy can zero the canvas)
+              canvas.width = img.naturalWidth || w;
+              canvas.height = img.naturalHeight || h;
+              if (cssW) canvas.style.width = cssW;
+              if (cssH) canvas.style.height = cssH;
+              const ctx = canvas.getContext('2d');
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              canvas.setAttribute('data-frozen', '1');
+              n++;
+            } catch (e) {}
+          }
+
+          for (const canvas of Array.from(document.querySelectorAll('canvas'))) {
+            if (canvas.getAttribute('data-frozen') === '1') continue;
+            try {
+              const url = canvas.toDataURL('image/png');
+              const img = await loadImg(url);
+              const ctx = canvas.getContext('2d');
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              canvas.setAttribute('data-frozen', '1');
+              n++;
+            } catch (e) {}
+          }
+          done(n);
+        })().catch(() => done(0));
         """
     )
 
-    # 4) espera <img> gerados
-    fim_img = time.time() + 10
-    while time.time() < fim_img:
-        pendentes = driver.execute_script(
-            """
-            return Array.from(document.querySelectorAll('img.chart-frozen'))
-              .filter(i => !i.complete || i.naturalWidth === 0).length;
-            """
-        )
-        if not pendentes:
-            break
-        time.sleep(0.2)
-
     driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(0.4)
-    print(f"[{nome}] Gráficos congelados em imagem: {convertidos}")
+    time.sleep(0.5)
+    print(f"[{nome}] Gráficos estáticos no canvas (sem movimento): {convertidos}")
     return int(convertidos or 0)
 
 
@@ -779,7 +849,8 @@ def acessar_baixar_relatorio(
     driver: WebDriver, wait: WebDriverWait, aba_principal: str, nome: str
 ) -> str | None:
     print(f"[{nome}] Aguardando popup do relatório...")
-    antes = set(glob.glob(str(Path(PASTA_DOWNLOAD) / "*")))
+    pastas_monitor = [PASTA_DOWNLOAD, str(Path.home() / "Downloads")]
+    antes = _listar_arquivos_download([Path(p) for p in pastas_monitor])
 
     acessar = wait.until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, "button.swal-button--confirm"))
@@ -795,17 +866,39 @@ def acessar_baixar_relatorio(
 
     print(f"[{nome}] Aba do relatório: {driver.current_url}")
     baixar = wait.until(EC.element_to_be_clickable((By.ID, "btn_save")))
-    # PDF do Tutory não captura canvas Chart.js — congela em <img> antes
     preparar_graficos_para_pdf(driver, nome)
-    js_click(driver, baixar)
+
+    # clique nativo — js_click às vezes não dispara o download no Firefox
+    try:
+        baixar.click()
+    except Exception:
+        js_click(driver, baixar)
     print(f"[{nome}] Download iniciado")
 
-    arquivo = aguardar_novo_download(antes)
+    arquivo = aguardar_novo_download(antes, pastas=pastas_monitor)
     if arquivo:
+        # se caiu em ~/Downloads, move para PASTA_DOWNLOAD antes de renomear
+        destino_dir = Path(PASTA_DOWNLOAD).resolve()
+        origem = Path(arquivo)
+        if origem.parent.resolve() != destino_dir:
+            destino_dir.mkdir(parents=True, exist_ok=True)
+            movido = destino_dir / origem.name
+            contador = 1
+            while movido.exists():
+                movido = destino_dir / f"{origem.stem}_{contador}{origem.suffix}"
+                contador += 1
+            origem.rename(movido)
+            arquivo = str(movido)
+            print(f"[{nome}] Movido de Downloads → {arquivo}")
         final = renomear_download(arquivo, nome)
         print(f"[{nome}] Arquivo salvo: {final}")
     else:
         print(f"[{nome}] AVISO: não detectei arquivo novo em {PASTA_DOWNLOAD}")
+        try:
+            amostra = sorted(Path(PASTA_DOWNLOAD).glob("*"))[-5:]
+            print(f"[{nome}] Últimos arquivos na pasta: {[p.name for p in amostra]}")
+        except Exception:
+            pass
         final = None
 
     fechar_abas_extras(driver, aba_principal)
