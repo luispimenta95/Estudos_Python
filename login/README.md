@@ -44,4 +44,4 @@ Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.p
 - Se a lista de alunos não aparecer, confira se a conta vê alunos em `/alunos/consulta`.
 - Em erro por aluno, o script tira screenshot e segue para o próximo.
 - Há um `sleep(2)` antes de clicar em **Gerar**.
-- Na aba do relatório, o script espera o **Chart.js** (`window.Chart`) e o gráfico **Acertos e Erros por Dia** pintado antes de **Baixar**. O aviso MIME `binary/octet-stream` do `chart.js` no DevTools é só warning — o Chrome carrega mesmo assim. Ajuste `REPORT_RENDER_TIMEOUT` se precisar.
+- Na aba do relatório, o script espera o **Chart.js** e depois **congela** os gráficos interativos (canvas → `<img>`) antes de **Baixar**. Os estáticos já iam no PDF; os interativos (ex.: Acertos e Erros por Dia) só entram assim. Ajuste `REPORT_RENDER_TIMEOUT` se precisar.

@@ -758,6 +758,98 @@ def aguardar_grafico_panorama(
     )
 
 
+def congelar_graficos_interativos(driver: webdriver.Chrome, nome: str) -> int:
+    """
+    Gráficos Chart.js (canvas interativo) não entram no PDF do Tutory;
+    imagens estáticas entram. Converte cada canvas em <img> via toDataURL
+    imediatamente antes de clicar em Baixar.
+    """
+    _forcar_chartjs_sem_animacao(driver)
+    time.sleep(0.4)
+
+    convertidos = driver.execute_script(
+        """
+        let n = 0;
+
+        function canvasParaImg(canvas, dataUrl) {
+          if (!canvas || !canvas.parentNode) return false;
+          const rect = canvas.getBoundingClientRect();
+          if (rect.width < 10 || rect.height < 10) return false;
+          const img = document.createElement('img');
+          img.src = dataUrl;
+          img.alt = 'grafico';
+          img.className = ((canvas.className || '') + ' chart-frozen').trim();
+          img.style.width = canvas.style.width || (rect.width + 'px');
+          img.style.height = canvas.style.height || (rect.height + 'px');
+          img.style.maxWidth = '100%';
+          img.style.display = 'block';
+          canvas.setAttribute('data-frozen', '1');
+          canvas.parentNode.replaceChild(img, canvas);
+          return true;
+        }
+
+        // 1) Chart.js: toBase64Image é o caminho mais confiável
+        try {
+          if (window.Chart) {
+            if (Chart.defaults) {
+              Chart.defaults.animation = false;
+            }
+            const instances = Chart.instances instanceof Map
+              ? [...Chart.instances.values()]
+              : Object.values(Chart.instances || {});
+            instances.forEach(chart => {
+              try {
+                if (chart.options) {
+                  chart.options.animation = false;
+                  if (chart.options.responsive !== undefined) {
+                    // evita reflow estranho na captura
+                  }
+                }
+                if (typeof chart.resize === 'function') chart.resize();
+                if (typeof chart.update === 'function') chart.update('none');
+                const canvas = chart.canvas || (chart.ctx && chart.ctx.canvas);
+                if (!canvas || canvas.getAttribute('data-frozen') === '1') return;
+                const url = (typeof chart.toBase64Image === 'function')
+                  ? chart.toBase64Image('image/png', 1)
+                  : canvas.toDataURL('image/png');
+                if (canvasParaImg(canvas, url)) n++;
+              } catch (e) {}
+            });
+          }
+        } catch (e) {}
+
+        // 2) Qualquer canvas restante (gráficos interativos fora do Chart.instances)
+        Array.from(document.querySelectorAll('canvas')).forEach(canvas => {
+          try {
+            if (canvas.getAttribute('data-frozen') === '1') return;
+            const url = canvas.toDataURL('image/png');
+            if (canvasParaImg(canvas, url)) n++;
+          } catch (e) {}
+        });
+
+        return n;
+        """
+    )
+
+    # espera os <img> gerados carregarem
+    fim = time.time() + 10
+    while time.time() < fim:
+        pendentes = driver.execute_script(
+            """
+            return Array.from(document.querySelectorAll('img.chart-frozen'))
+              .filter(img => !img.complete || img.naturalWidth === 0).length;
+            """
+        )
+        if not pendentes:
+            break
+        time.sleep(0.2)
+
+    driver.execute_script("window.scrollTo(0, 0);")
+    time.sleep(0.3)
+    print(f"[{nome}] Gráficos interativos congelados em imagem: {convertidos}")
+    return int(convertidos or 0)
+
+
 def aguardar_novo_download(antes: set[str], timeout: int = DOWNLOAD_TIMEOUT) -> str | None:
     fim = time.time() + timeout
     while time.time() < fim:
@@ -809,8 +901,9 @@ def acessar_baixar_relatorio(
 
     print(f"[{nome}] Aba do relatório: {driver.current_url}")
     baixar = wait.until(EC.element_to_be_clickable((By.ID, "btn_save")))
-    # O botão aparece antes do gráfico "Acertos e Erros por Dia" pintar
+    # Espera pintar + congela canvas interativo em <img> (PDF só captura estáticos)
     aguardar_grafico_panorama(driver, nome)
+    congelar_graficos_interativos(driver, nome)
     js_click(driver, baixar)
     print(f"[{nome}] Download iniciado")
 
