@@ -32,7 +32,7 @@ python login.py --periodo 1
 # ou segunda quinzena:
 python login.py --periodo 2
 
-# teste: só o 1º aluno (validar PDF com gráficos)
+# teste: só Marianny Carvalho (validar PDF com gráficos)
 python login.py --periodo 1 --teste
 ```
 
