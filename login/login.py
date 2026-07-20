@@ -19,6 +19,7 @@ from __future__ import annotations
 import glob
 import argparse
 import os
+import shutil
 import time
 from datetime import datetime
 from calendar import monthrange
@@ -99,6 +100,70 @@ def validar_config() -> None:
         )
 
 
+def _parece_binario_firefox(caminho: Path) -> bool:
+    """Geckodriver rejeita wrappers (snap/script). Precisa do executável real."""
+    try:
+        if not caminho.is_file() or not os.access(caminho, os.X_OK):
+            return False
+        # scripts shell / snap launchers começam com shebang
+        with caminho.open("rb") as f:
+            inicio = f.read(128)
+        if inicio.startswith(b"#!"):
+            return False
+        nome = caminho.name.lower()
+        return "firefox" in nome or nome in {"firefox", "firefox-bin", "firefox-esr"}
+    except OSError:
+        return False
+
+
+def resolver_binario_firefox() -> str | None:
+    """
+    Resolve um Firefox que o geckodriver aceite.
+    /usr/bin/firefox no Ubuntu costuma ser wrapper snap → InvalidArgumentException.
+    """
+    candidatos: list[Path] = []
+
+    if FIREFOX_BINARY:
+        candidatos.append(Path(FIREFOX_BINARY).expanduser())
+
+    # binários reais comuns (antes dos wrappers do PATH)
+    candidatos.extend(
+        Path(p)
+        for p in (
+            "/usr/lib/firefox/firefox",
+            "/usr/lib/firefox-esr/firefox-esr",
+            "/snap/firefox/current/usr/lib/firefox/firefox",
+            "/opt/firefox/firefox",
+            str(Path.home() / "firefox" / "firefox"),
+            "/Applications/Firefox.app/Contents/MacOS/firefox",
+        )
+    )
+
+    which = shutil.which("firefox") or shutil.which("firefox-esr")
+    if which:
+        candidatos.append(Path(which).resolve())
+
+    vistos: set[str] = set()
+    for cand in candidatos:
+        try:
+            chave = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            chave = str(cand)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        if _parece_binario_firefox(cand):
+            return str(cand.resolve())
+
+    if FIREFOX_BINARY:
+        print(
+            f"AVISO: FIREFOX_BINARY='{FIREFOX_BINARY}' não é um executável "
+            "Firefox válido (wrappers como /usr/bin/firefox do snap não servem). "
+            "Tentando deixar o geckodriver achar o padrão..."
+        )
+    return None
+
+
 def criar_driver() -> webdriver.Firefox:
     """
     Usa Firefox — mesmo browser do teste manual no Tutory.
@@ -106,11 +171,24 @@ def criar_driver() -> webdriver.Firefox:
     """
     pasta = str(Path(PASTA_DOWNLOAD).resolve())
     options = Options()
-    if FIREFOX_BINARY:
-        options.binary_location = FIREFOX_BINARY
+
+    binario = resolver_binario_firefox()
+    if binario:
+        options.binary_location = binario
+        print(f"Firefox binary: {binario}")
+    else:
+        print(
+            "Firefox binary: (padrão do geckodriver). "
+            "Se falhar, defina FIREFOX_BINARY no .env para o executável real, "
+            "ex.: /usr/lib/firefox/firefox ou "
+            "/snap/firefox/current/usr/lib/firefox/firefox"
+        )
+
     if FIREFOX_PROFILE:
+        perfil = str(Path(FIREFOX_PROFILE).expanduser())
         options.add_argument("-profile")
-        options.add_argument(FIREFOX_PROFILE)
+        options.add_argument(perfil)
+        print(f"Firefox profile: {perfil}")
     if HEADLESS:
         options.add_argument("-headless")
 
@@ -127,7 +205,22 @@ def criar_driver() -> webdriver.Firefox:
     )
     options.set_preference("browser.helperApps.alwaysAsk.force", False)
 
-    driver = webdriver.Firefox(service=Service(), options=options)
+    try:
+        driver = webdriver.Firefox(service=Service(), options=options)
+    except Exception as exc:
+        msg = str(exc)
+        if "not a Firefox executable" in msg or "binary is not" in msg.lower():
+            raise SystemExit(
+                "Não achei um Firefox executável válido para o geckodriver.\n"
+                "No .env, aponte FIREFOX_BINARY para o binário real (não o wrapper):\n"
+                "  FIREFOX_BINARY=/usr/lib/firefox/firefox\n"
+                "  # ou snap:\n"
+                "  FIREFOX_BINARY=/snap/firefox/current/usr/lib/firefox/firefox\n"
+                "E comente/remova um FIREFOX_BINARY inválido (ex.: /usr/bin/firefox).\n"
+                f"Erro original: {exc}"
+            ) from exc
+        raise
+
     driver.set_page_load_timeout(60)
     try:
         driver.maximize_window()

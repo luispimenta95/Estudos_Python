@@ -27,6 +27,16 @@ Preencha `LOGIN_USER` e `LOGIN_PASSWORD` no `.env`.
 
 É preciso ter **Firefox** + **geckodriver** compatível no PATH.
 
+Se aparecer `binary is not a Firefox executable`, o `.env` está apontando para um
+wrapper (ex.: `/usr/bin/firefox` do snap). Ajuste para o binário real:
+
+```bash
+# descubra o binário:
+#   ls /usr/lib/firefox/firefox
+#   ls /snap/firefox/current/usr/lib/firefox/firefox
+FIREFOX_BINARY=/usr/lib/firefox/firefox
+```
+
 ## Executar
 
 ```bash
