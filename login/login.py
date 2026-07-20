@@ -82,6 +82,8 @@ FIREFOX_BINARY = os.getenv("FIREFOX_BINARY", "").strip()
 HEADLESS = os.getenv("HEADLESS", "0").strip() in {"1", "true", "True", "yes"}
 TIMEOUT = int(os.getenv("TIMEOUT", "25"))
 DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "90"))
+# Tempo para Chart.js pintar o gráfico interativo antes de congelar
+CHART_WAIT = int(os.getenv("CHART_WAIT", "30"))
 
 URL_CONSULTA = "https://admin.tutory.com.br/alunos/consulta"
 
@@ -652,6 +654,127 @@ def renomear_download(caminho: str, nome_aluno: str) -> str:
     return str(destino)
 
 
+def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
+    """
+    O PDF do Tutory captura imagens estáticas, não canvas interativo (Chart.js).
+    Espera o Chart pintar e substitui cada <canvas> por <img> (toDataURL).
+    """
+    print(f"[{nome}] Preparando gráficos interativos para o PDF...")
+
+    WebDriverWait(driver, CHART_WAIT).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
+    # 1) espera Chart.js + ao menos um canvas (ou esgota o tempo)
+    fim = time.time() + CHART_WAIT
+    while time.time() < fim:
+        pronto = driver.execute_script(
+            """
+            const hasChart = typeof window.Chart === 'function'
+              || typeof window.Chart === 'object';
+            const canvases = document.querySelectorAll('canvas').length;
+            const jq = (window.jQuery && jQuery.active) || 0;
+            return {hasChart, canvases, jq};
+            """
+        )
+        if pronto.get("jq", 0) == 0 and (
+            pronto.get("hasChart") or pronto.get("canvases", 0) > 0
+        ):
+            print(
+                f"[{nome}] Chart.js="
+                f"{'sim' if pronto.get('hasChart') else 'não'}, "
+                f"canvas={pronto.get('canvases', 0)}"
+            )
+            break
+        time.sleep(0.3)
+    else:
+        print(f"[{nome}] AVISO: Chart.js/canvas não detectados a tempo")
+
+    # 2) leva o panorama à vista e dá tempo de pintar
+    driver.execute_script(
+        """
+        const el = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,span,p,strong'))
+          .find(n => {
+            const t = (n.textContent || '').toLowerCase();
+            return t.includes('acertos e erros') || t.includes('breve panorama');
+          });
+        if (el) el.scrollIntoView({block: 'center', behavior: 'instant'});
+        """
+    )
+    time.sleep(3)
+
+    # 3) desliga animação e congela canvas → img
+    convertidos = driver.execute_script(
+        """
+        let n = 0;
+
+        function paraImg(canvas, url) {
+          if (!canvas || !canvas.parentNode) return false;
+          const rect = canvas.getBoundingClientRect();
+          if (rect.width < 8 || rect.height < 8) return false;
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = 'grafico';
+          img.className = ((canvas.className || '') + ' chart-frozen').trim();
+          img.style.width = canvas.style.width || (rect.width + 'px');
+          img.style.height = canvas.style.height || (rect.height + 'px');
+          img.style.maxWidth = '100%';
+          img.style.display = 'block';
+          canvas.parentNode.replaceChild(img, canvas);
+          return true;
+        }
+
+        try {
+          if (window.Chart) {
+            if (Chart.defaults) Chart.defaults.animation = false;
+            const instances = Chart.instances instanceof Map
+              ? [...Chart.instances.values()]
+              : Object.values(Chart.instances || {});
+            instances.forEach(chart => {
+              try {
+                if (chart.options) chart.options.animation = false;
+                if (typeof chart.resize === 'function') chart.resize();
+                if (typeof chart.update === 'function') chart.update('none');
+                const canvas = chart.canvas || (chart.ctx && chart.ctx.canvas);
+                if (!canvas) return;
+                const url = (typeof chart.toBase64Image === 'function')
+                  ? chart.toBase64Image('image/png', 1)
+                  : canvas.toDataURL('image/png');
+                if (paraImg(canvas, url)) n++;
+              } catch (e) {}
+            });
+          }
+        } catch (e) {}
+
+        Array.from(document.querySelectorAll('canvas')).forEach(canvas => {
+          try {
+            if (paraImg(canvas, canvas.toDataURL('image/png'))) n++;
+          } catch (e) {}
+        });
+
+        return n;
+        """
+    )
+
+    # 4) espera <img> gerados
+    fim_img = time.time() + 10
+    while time.time() < fim_img:
+        pendentes = driver.execute_script(
+            """
+            return Array.from(document.querySelectorAll('img.chart-frozen'))
+              .filter(i => !i.complete || i.naturalWidth === 0).length;
+            """
+        )
+        if not pendentes:
+            break
+        time.sleep(0.2)
+
+    driver.execute_script("window.scrollTo(0, 0);")
+    time.sleep(0.4)
+    print(f"[{nome}] Gráficos congelados em imagem: {convertidos}")
+    return int(convertidos or 0)
+
+
 def acessar_baixar_relatorio(
     driver: WebDriver, wait: WebDriverWait, aba_principal: str, nome: str
 ) -> str | None:
@@ -672,6 +795,8 @@ def acessar_baixar_relatorio(
 
     print(f"[{nome}] Aba do relatório: {driver.current_url}")
     baixar = wait.until(EC.element_to_be_clickable((By.ID, "btn_save")))
+    # PDF do Tutory não captura canvas Chart.js — congela em <img> antes
+    preparar_graficos_para_pdf(driver, nome)
     js_click(driver, baixar)
     print(f"[{nome}] Download iniciado")
 
