@@ -55,3 +55,4 @@ Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.p
 - Não versionar o `.env` com senha.
 - Se a lista de alunos não aparecer, confira se a conta vê alunos em `/alunos/consulta`.
 - Em erro por aluno, o script tira screenshot e segue para o próximo.
+- Antes de **Baixar**, o script congela gráficos interativos (Chart.js/`<canvas>`) em `<img>`, porque o PDF do Tutory só captura imagens estáticas. No log: `Gráficos congelados em imagem: N`.
