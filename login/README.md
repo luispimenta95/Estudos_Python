@@ -1,17 +1,19 @@
 # Relatórios Tutory (alunos ativos)
 
-Script Selenium que:
+Script Selenium (**Firefox**) que:
 
 1. faz login no painel
 2. abre **Alunos → Pesquisa**
 3. filtra o select **status** para **ativos** e clica em **Buscar** (só gera relatório de estudantes ativos)
 4. para **cada aluno** da lista filtrada:
    - abre **Relatório do Coach**
-   - aplica filtros (questões + mês + dia 1–15)
+   - aplica filtros (questões + mês + datas)
    - baixa o PDF
    - marca sucesso ou falha
 5. ao fim do loop, **reprocessa os com erro** (até 3 tentativas no total por aluno)
 6. avança a paginação, se existir
+
+Usa **Firefox** (como no teste manual). No Chrome os gráficos interativos do relatório não iam no PDF.
 
 ## Setup
 
@@ -23,7 +25,7 @@ cp .env.example .env
 
 Preencha `LOGIN_USER` e `LOGIN_PASSWORD` no `.env`.
 
-É preciso ter **Google Chrome** + **ChromeDriver** compatível no PATH.
+É preciso ter **Firefox** + **geckodriver** compatível no PATH.
 
 ## Executar
 
@@ -43,5 +45,3 @@ Os arquivos vão para `PASTA_DOWNLOAD`, renomeados como `Nome_do_Aluno_YYYY-MM.p
 - Não versionar o `.env` com senha.
 - Se a lista de alunos não aparecer, confira se a conta vê alunos em `/alunos/consulta`.
 - Em erro por aluno, o script tira screenshot e segue para o próximo.
-- Há um `sleep(2)` antes de clicar em **Gerar**.
-- Na aba do relatório, o script espera o **Chart.js** e depois **congela** os gráficos interativos (canvas → `<img>`) antes de **Baixar**. Os estáticos já iam no PDF; os interativos (ex.: Acertos e Erros por Dia) só entram assim. Ajuste `REPORT_RENDER_TIMEOUT` se precisar.

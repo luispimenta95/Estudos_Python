@@ -31,9 +31,10 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
     TimeoutException,
 )
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
@@ -74,15 +75,12 @@ PASTA_DOWNLOAD = os.getenv(
     "PASTA_DOWNLOAD",
     str(Path.home() / "Relatorios_Tutory"),
 ).strip()
-CHROME_USER_DATA = os.getenv(
-    "CHROME_USER_DATA",
-    str(Path.home() / ".chrome-selenium"),
-).strip()
+# Perfil Firefox opcional (mesmo browser do teste manual)
+FIREFOX_PROFILE = os.getenv("FIREFOX_PROFILE", "").strip()
+FIREFOX_BINARY = os.getenv("FIREFOX_BINARY", "").strip()
 HEADLESS = os.getenv("HEADLESS", "0").strip() in {"1", "true", "True", "yes"}
 TIMEOUT = int(os.getenv("TIMEOUT", "25"))
 DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "90"))
-# Espera o gráfico (canvas/SVG) na aba do relatório antes de Baixar
-REPORT_RENDER_TIMEOUT = int(os.getenv("REPORT_RENDER_TIMEOUT", "45"))
 
 URL_CONSULTA = "https://admin.tutory.com.br/alunos/consulta"
 
@@ -101,37 +99,49 @@ def validar_config() -> None:
         )
 
 
-def criar_driver() -> webdriver.Chrome:
+def criar_driver() -> webdriver.Firefox:
+    """
+    Usa Firefox — mesmo browser do teste manual no Tutory.
+    (No Chrome os gráficos interativos Chart.js não iam no PDF.)
+    """
+    pasta = str(Path(PASTA_DOWNLOAD).resolve())
     options = Options()
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-software-rasterizer")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument(f"--user-data-dir={CHROME_USER_DATA}")
-    options.add_argument("--start-maximized")
+    if FIREFOX_BINARY:
+        options.binary_location = FIREFOX_BINARY
+    if FIREFOX_PROFILE:
+        options.add_argument("-profile")
+        options.add_argument(FIREFOX_PROFILE)
     if HEADLESS:
-        options.add_argument("--headless=new")
-        options.add_argument("--window-size=1920,1080")
+        options.add_argument("-headless")
 
-    prefs = {
-        "download.default_directory": str(Path(PASTA_DOWNLOAD).resolve()),
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
-    }
-    options.add_experimental_option("prefs", prefs)
+    # Download automático de PDF (sem abrir o visualizador pdf.js)
+    options.set_preference("browser.download.folderList", 2)
+    options.set_preference("browser.download.dir", pasta)
+    options.set_preference("browser.download.useDownloadDir", True)
+    options.set_preference("browser.download.manager.showWhenStarting", False)
+    options.set_preference("browser.download.alwaysOpenPanel", False)
+    options.set_preference("pdfjs.disabled", True)
+    options.set_preference(
+        "browser.helperApps.neverAsk.saveToDisk",
+        "application/pdf,application/octet-stream,binary/octet-stream",
+    )
+    options.set_preference("browser.helperApps.alwaysAsk.force", False)
 
-    driver = webdriver.Chrome(service=Service(), options=options)
+    driver = webdriver.Firefox(service=Service(), options=options)
     driver.set_page_load_timeout(60)
+    try:
+        driver.maximize_window()
+    except Exception:
+        driver.set_window_size(1920, 1080)
+    print(f"Firefox iniciado (download em: {pasta})")
     return driver
 
 
-def js_click(driver: webdriver.Chrome, elemento) -> None:
+def js_click(driver: WebDriver, elemento) -> None:
     driver.execute_script("arguments[0].click();", elemento)
 
 
-def fechar_abas_extras(driver: webdriver.Chrome, aba_principal: str) -> None:
+def fechar_abas_extras(driver: WebDriver, aba_principal: str) -> None:
     for handle in list(driver.window_handles):
         if handle != aba_principal:
             driver.switch_to.window(handle)
@@ -139,7 +149,7 @@ def fechar_abas_extras(driver: webdriver.Chrome, aba_principal: str) -> None:
     driver.switch_to.window(aba_principal)
 
 
-def limpar_overlays(driver: webdriver.Chrome) -> None:
+def limpar_overlays(driver: WebDriver) -> None:
     """Fecha dropdowns/modais/sweetalert que sobraram do aluno anterior."""
     driver.execute_script(
         """
@@ -171,7 +181,7 @@ def elemento_visivel(el) -> bool:
         return False
 
 
-def esperar_link_relatorio_visivel(driver: webdriver.Chrome, card, timeout: int = TIMEOUT):
+def esperar_link_relatorio_visivel(driver: WebDriver, card, timeout: int = TIMEOUT):
     """
     Não use XPath global: após o 1º aluno existem vários
     'Relatório do Coach' no DOM (ocultos). Pegamos só o visível
@@ -235,7 +245,7 @@ def esperar_link_relatorio_visivel(driver: webdriver.Chrome, card, timeout: int 
     )
 
 
-def login(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+def login(driver: WebDriver, wait: WebDriverWait) -> None:
     print("Abrindo página de login...")
     driver.get(URL_LOGIN)
 
@@ -253,7 +263,7 @@ def login(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     print("Login realizado")
 
 
-def filtrar_alunos_ativos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+def filtrar_alunos_ativos(driver: WebDriver, wait: WebDriverWait) -> None:
     """Seleciona status=ativos e clica em Buscar antes de listar/abrir ações."""
     print("Filtrando alunos com status 'ativos'...")
     select_el = wait.until(EC.presence_of_element_located((By.NAME, "status")))
@@ -284,7 +294,7 @@ def filtrar_alunos_ativos(driver: webdriver.Chrome, wait: WebDriverWait) -> None
     print("Filtro de alunos ativos aplicado")
 
 
-def abrir_pesquisa_alunos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+def abrir_pesquisa_alunos(driver: WebDriver, wait: WebDriverWait) -> None:
     print("Abrindo pesquisa de alunos...")
     driver.get(URL_CONSULTA)
     wait.until(lambda d: "/alunos/consulta" in d.current_url)
@@ -293,7 +303,7 @@ def abrir_pesquisa_alunos(driver: webdriver.Chrome, wait: WebDriverWait) -> None
     print("Pesquisa de alunos aberta")
 
 
-def listar_alunos_visiveis(driver: webdriver.Chrome) -> list[dict]:
+def listar_alunos_visiveis(driver: WebDriver) -> list[dict]:
     """Retorna [{index, nome}] dos cards visíveis na página atual."""
     cards = driver.find_elements(By.CSS_SELECTOR, ".pesquisa-aluno-container")
     alunos: list[dict] = []
@@ -307,7 +317,7 @@ def listar_alunos_visiveis(driver: webdriver.Chrome) -> list[dict]:
     return alunos
 
 
-def ir_para_proxima_pagina(driver: webdriver.Chrome, wait: WebDriverWait) -> bool:
+def ir_para_proxima_pagina(driver: WebDriver, wait: WebDriverWait) -> bool:
     """Tenta avançar paginação. Retorna True se mudou de página."""
     primeiro = driver.find_elements(By.CSS_SELECTOR, ".pesquisa-aluno-container .pesquisa-aluno-nome")
     texto_antes = primeiro[0].text if primeiro else ""
@@ -344,7 +354,7 @@ def ir_para_proxima_pagina(driver: webdriver.Chrome, wait: WebDriverWait) -> boo
     return False
 
 
-def coletar_todos_alunos(driver: webdriver.Chrome, wait: WebDriverWait) -> list[str]:
+def coletar_todos_alunos(driver: WebDriver, wait: WebDriverWait) -> list[str]:
     """Percorre a lista (e paginação) e devolve os nomes na ordem."""
     abrir_pesquisa_alunos(driver, wait)
     nomes: list[str] = []
@@ -365,7 +375,7 @@ def coletar_todos_alunos(driver: webdriver.Chrome, wait: WebDriverWait) -> list[
 
 
 def encontrar_aluno_por_trecho(
-    driver: webdriver.Chrome, wait: WebDriverWait, trecho: str
+    driver: WebDriver, wait: WebDriverWait, trecho: str
 ) -> str | None:
     """Varre a lista filtrada e devolve o nome completo que contém o trecho."""
     alvo = trecho.casefold().strip()
@@ -384,7 +394,7 @@ def encontrar_aluno_por_trecho(
     return None
 
 
-def localizar_card_por_nome(driver: webdriver.Chrome, wait: WebDriverWait, nome: str):
+def localizar_card_por_nome(driver: WebDriver, wait: WebDriverWait, nome: str):
     """Abre a consulta e navega páginas até achar o card do aluno."""
     limpar_overlays(driver)
     abrir_pesquisa_alunos(driver, wait)
@@ -407,7 +417,7 @@ def localizar_card_por_nome(driver: webdriver.Chrome, wait: WebDriverWait, nome:
 
 
 def abrir_relatorio_coach_do_card(
-    driver: webdriver.Chrome, wait: WebDriverWait, card, nome: str
+    driver: WebDriver, wait: WebDriverWait, card, nome: str
 ) -> None:
     print(f"[{nome}] Abrindo opções...")
     limpar_overlays(driver)
@@ -470,7 +480,7 @@ def abrir_relatorio_coach_do_card(
     )
 
 
-def configurar_filtros_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, nome: str) -> None:
+def configurar_filtros_relatorio(driver: WebDriver, wait: WebDriverWait, nome: str) -> None:
     print(f"[{nome}] Configurando filtros...")
 
     questoes = wait.until(
@@ -514,340 +524,8 @@ def configurar_filtros_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, 
     )
 
     gerar = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn-generate-my-report")))
-    time.sleep(2)
     js_click(driver, gerar)
     print(f"[{nome}] Relatório solicitado")
-
-
-def _status_chartjs(driver: webdriver.Chrome) -> dict:
-    """Diagnóstico: script chart.js no DOM + global Chart disponível."""
-    return driver.execute_script(
-        """
-        const scripts = Array.from(document.scripts || []);
-        const tag = scripts.find(s => (s.src || '').toLowerCase().includes('chart'));
-        const resources = (performance.getEntriesByType
-          ? performance.getEntriesByType('resource') : [])
-          .filter(e => (e.name || '').toLowerCase().includes('chart.js'));
-        const instances = (window.Chart && Chart.instances)
-          ? (Chart.instances instanceof Map
-              ? Chart.instances.size
-              : Object.keys(Chart.instances).length)
-          : 0;
-        return {
-          hasChartGlobal: typeof window.Chart === 'function'
-            || typeof window.Chart === 'object',
-          scriptSrc: tag ? tag.src : '',
-          scriptLoaded: !!(tag && tag.src),
-          resourceCount: resources.length,
-          instances: instances,
-          jqueryActive: (window.jQuery && jQuery.active) || 0
-        };
-        """
-    )
-
-
-def _forcar_chartjs_sem_animacao(driver: webdriver.Chrome) -> None:
-    driver.execute_script(
-        """
-        try {
-          if (!window.Chart) return;
-          if (Chart.defaults) {
-            Chart.defaults.animation = false;
-            if (Chart.defaults.animations) {
-              Object.keys(Chart.defaults.animations).forEach(k => {
-                Chart.defaults.animations[k] = false;
-              });
-            }
-          }
-          const instances = Chart.instances instanceof Map
-            ? [...Chart.instances.values()]
-            : Object.values(Chart.instances || {});
-          instances.forEach(c => {
-            try {
-              if (c.options) c.options.animation = false;
-              if (typeof c.resize === 'function') c.resize();
-              if (typeof c.update === 'function') c.update('none');
-            } catch (e) {}
-          });
-        } catch (e) {}
-
-        const nodes = Array.from(
-          document.querySelectorAll('h1,h2,h3,h4,p,div,span,strong,canvas')
-        );
-        const alvo = nodes.find(el => {
-          const t = (el.textContent || '').toLowerCase();
-          return t.includes('acertos e erros') || t.includes('breve panorama');
-        });
-        if (alvo) alvo.scrollIntoView({block: 'center', behavior: 'instant'});
-        // força lazy-render: sobe e desce um pouco
-        window.scrollBy(0, 200);
-        window.scrollBy(0, -200);
-        """
-    )
-
-
-def _grafico_panorama_pronto(driver: webdriver.Chrome) -> dict:
-    """
-    Pronto quando Chart.js existe e há canvas com tinta (ou SVG equivalente).
-    O aviso MIME binary/octet-stream do chart.js NÃO impede o load no Chrome
-    (a mensagem diz que o script 'foi carregado apesar do MIME').
-    """
-    return driver.execute_script(
-        """
-        const out = {
-          ok: false, reason: 'waiting',
-          hasChart: false, instances: 0, canvases: 0, svgs: 0, ink: 0
-        };
-
-        if (window.jQuery && jQuery.active > 0) {
-          out.reason = 'jquery';
-          return out;
-        }
-
-        out.hasChart = typeof window.Chart === 'function'
-          || typeof window.Chart === 'object';
-        if (!out.hasChart) {
-          out.reason = 'chartjs-nao-carregou';
-          return out;
-        }
-
-        const instances = Chart.instances instanceof Map
-          ? [...Chart.instances.values()]
-          : Object.values(Chart.instances || {});
-        out.instances = instances.length;
-        const comDados = instances.some(c => {
-          try {
-            return (c.data && c.data.datasets || []).some(
-              d => Array.isArray(d.data) && d.data.length > 0
-            );
-          } catch (e) { return false; }
-        });
-
-        function canvasTemTinta(c) {
-          const r = c.getBoundingClientRect();
-          if (r.width < 80 || r.height < 60 || c.width < 10 || c.height < 10) {
-            return 0;
-          }
-          try {
-            const ctx = c.getContext('2d', { willReadFrequently: true });
-            if (!ctx) return 0;
-            // amostra centro + cantos (área do gráfico não fica só no 0,0)
-            const pts = [
-              [0, 0],
-              [Math.floor(c.width / 2), Math.floor(c.height / 2)],
-              [Math.floor(c.width * 0.2), Math.floor(c.height * 0.2)],
-              [Math.floor(c.width * 0.7), Math.floor(c.height * 0.4)]
-            ];
-            let ink = 0;
-            for (const [x0, y0] of pts) {
-              const w = Math.min(60, c.width - x0);
-              const h = Math.min(60, c.height - y0);
-              if (w < 5 || h < 5) continue;
-              const data = ctx.getImageData(x0, y0, w, h).data;
-              for (let i = 3; i < data.length; i += 16) {
-                if (data[i] > 0) {
-                  // ignora quase-branco puro: procura cor das linhas
-                  const a = data[i], r = data[i-3], g = data[i-2], b = data[i-1];
-                  if (a > 0 && (r < 250 || g < 250 || b < 250)) ink++;
-                  if (ink > 20) return ink;
-                }
-              }
-            }
-            return ink;
-          } catch (e) {
-            return 999; // canvas tainted → assume ok
-          }
-        }
-
-        const canvases = Array.from(document.querySelectorAll('canvas'));
-        out.canvases = canvases.length;
-        let maxInk = 0;
-        for (const c of canvases) {
-          maxInk = Math.max(maxInk, canvasTemTinta(c));
-        }
-        out.ink = maxInk;
-
-        const svgs = Array.from(document.querySelectorAll('svg')).filter(s => {
-          const r = s.getBoundingClientRect();
-          return r.width >= 120 && r.height >= 80;
-        });
-        out.svgs = svgs.length;
-        const svgOk = svgs.some(
-          s => s.querySelectorAll('path, circle, line, polyline, text').length >= 8
-        );
-
-        if (maxInk > 20 || svgOk || (comDados && out.canvases > 0)) {
-          out.ok = true;
-          out.reason = maxInk > 20 ? 'canvas' : (svgOk ? 'svg' : 'chart-instances');
-          return out;
-        }
-
-        if (out.instances === 0) out.reason = 'chart-sem-instancia';
-        else if (!comDados) out.reason = 'chart-sem-dados';
-        else out.reason = 'grafico-vazio';
-        return out;
-        """
-    )
-
-
-def aguardar_grafico_panorama(
-    driver: webdriver.Chrome,
-    nome: str,
-    timeout: int | None = None,
-) -> None:
-    """
-    Espera Chart.js (static.tutory.com.br/.../chart.js) + pintura do
-    'Acertos e Erros por Dia' antes do PDF.
-    O aviso MIME binary/octet-stream é só warning — o Chrome carrega mesmo assim.
-    """
-    timeout = REPORT_RENDER_TIMEOUT if timeout is None else timeout
-    print(f"[{nome}] Aguardando Chart.js + gráfico do panorama...")
-
-    WebDriverWait(driver, timeout).until(
-        lambda d: d.execute_script("return document.readyState") == "complete"
-    )
-
-    fim = time.time() + timeout
-    chart_logado = False
-    pronto_desde: float | None = None
-    estabilizar_s = 2.5
-    ultimo = "…"
-
-    while time.time() < fim:
-        diag = _status_chartjs(driver)
-        if diag.get("hasChartGlobal") and not chart_logado:
-            print(
-                f"[{nome}] Chart.js OK "
-                f"(instances={diag.get('instances', 0)}, "
-                f"src={diag.get('scriptSrc') or 'global'})"
-            )
-            chart_logado = True
-            _forcar_chartjs_sem_animacao(driver)
-
-        status = _grafico_panorama_pronto(driver)
-        ultimo = (status or {}).get("reason", "…")
-
-        if status and status.get("ok"):
-            if pronto_desde is None:
-                pronto_desde = time.time()
-                _forcar_chartjs_sem_animacao(driver)
-                print(
-                    f"[{nome}] Gráfico detectado ({status.get('reason')}: "
-                    f"ink={status.get('ink', 0)}, "
-                    f"canvas={status.get('canvases', 0)}, "
-                    f"instances={status.get('instances', 0)}); estabilizando..."
-                )
-            elif time.time() - pronto_desde >= estabilizar_s:
-                driver.execute_script("window.scrollTo(0, 0);")
-                time.sleep(0.3)
-                print(f"[{nome}] Gráfico pronto para PDF")
-                return
-        else:
-            pronto_desde = None
-            # se Chart já existe mas ainda sem dados/tinta, reforce update
-            if diag.get("hasChartGlobal"):
-                _forcar_chartjs_sem_animacao(driver)
-        time.sleep(0.4)
-
-    diag = _status_chartjs(driver)
-    print(
-        f"[{nome}] AVISO: timeout ({timeout}s) no gráfico "
-        f"(último: {ultimo}; Chart.js="
-        f"{'sim' if diag.get('hasChartGlobal') else 'não'}; "
-        f"instances={diag.get('instances', 0)}); baixando mesmo assim"
-    )
-
-
-def congelar_graficos_interativos(driver: webdriver.Chrome, nome: str) -> int:
-    """
-    Gráficos Chart.js (canvas interativo) não entram no PDF do Tutory;
-    imagens estáticas entram. Converte cada canvas em <img> via toDataURL
-    imediatamente antes de clicar em Baixar.
-    """
-    _forcar_chartjs_sem_animacao(driver)
-    time.sleep(0.4)
-
-    convertidos = driver.execute_script(
-        """
-        let n = 0;
-
-        function canvasParaImg(canvas, dataUrl) {
-          if (!canvas || !canvas.parentNode) return false;
-          const rect = canvas.getBoundingClientRect();
-          if (rect.width < 10 || rect.height < 10) return false;
-          const img = document.createElement('img');
-          img.src = dataUrl;
-          img.alt = 'grafico';
-          img.className = ((canvas.className || '') + ' chart-frozen').trim();
-          img.style.width = canvas.style.width || (rect.width + 'px');
-          img.style.height = canvas.style.height || (rect.height + 'px');
-          img.style.maxWidth = '100%';
-          img.style.display = 'block';
-          canvas.setAttribute('data-frozen', '1');
-          canvas.parentNode.replaceChild(img, canvas);
-          return true;
-        }
-
-        // 1) Chart.js: toBase64Image é o caminho mais confiável
-        try {
-          if (window.Chart) {
-            if (Chart.defaults) {
-              Chart.defaults.animation = false;
-            }
-            const instances = Chart.instances instanceof Map
-              ? [...Chart.instances.values()]
-              : Object.values(Chart.instances || {});
-            instances.forEach(chart => {
-              try {
-                if (chart.options) {
-                  chart.options.animation = false;
-                  if (chart.options.responsive !== undefined) {
-                    // evita reflow estranho na captura
-                  }
-                }
-                if (typeof chart.resize === 'function') chart.resize();
-                if (typeof chart.update === 'function') chart.update('none');
-                const canvas = chart.canvas || (chart.ctx && chart.ctx.canvas);
-                if (!canvas || canvas.getAttribute('data-frozen') === '1') return;
-                const url = (typeof chart.toBase64Image === 'function')
-                  ? chart.toBase64Image('image/png', 1)
-                  : canvas.toDataURL('image/png');
-                if (canvasParaImg(canvas, url)) n++;
-              } catch (e) {}
-            });
-          }
-        } catch (e) {}
-
-        // 2) Qualquer canvas restante (gráficos interativos fora do Chart.instances)
-        Array.from(document.querySelectorAll('canvas')).forEach(canvas => {
-          try {
-            if (canvas.getAttribute('data-frozen') === '1') return;
-            const url = canvas.toDataURL('image/png');
-            if (canvasParaImg(canvas, url)) n++;
-          } catch (e) {}
-        });
-
-        return n;
-        """
-    )
-
-    # espera os <img> gerados carregarem
-    fim = time.time() + 10
-    while time.time() < fim:
-        pendentes = driver.execute_script(
-            """
-            return Array.from(document.querySelectorAll('img.chart-frozen'))
-              .filter(img => !img.complete || img.naturalWidth === 0).length;
-            """
-        )
-        if not pendentes:
-            break
-        time.sleep(0.2)
-
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(0.3)
-    print(f"[{nome}] Gráficos interativos congelados em imagem: {convertidos}")
-    return int(convertidos or 0)
 
 
 def aguardar_novo_download(antes: set[str], timeout: int = DOWNLOAD_TIMEOUT) -> str | None:
@@ -882,7 +560,7 @@ def renomear_download(caminho: str, nome_aluno: str) -> str:
 
 
 def acessar_baixar_relatorio(
-    driver: webdriver.Chrome, wait: WebDriverWait, aba_principal: str, nome: str
+    driver: WebDriver, wait: WebDriverWait, aba_principal: str, nome: str
 ) -> str | None:
     print(f"[{nome}] Aguardando popup do relatório...")
     antes = set(glob.glob(str(Path(PASTA_DOWNLOAD) / "*")))
@@ -901,9 +579,6 @@ def acessar_baixar_relatorio(
 
     print(f"[{nome}] Aba do relatório: {driver.current_url}")
     baixar = wait.until(EC.element_to_be_clickable((By.ID, "btn_save")))
-    # Espera pintar + congela canvas interativo em <img> (PDF só captura estáticos)
-    aguardar_grafico_panorama(driver, nome)
-    congelar_graficos_interativos(driver, nome)
     js_click(driver, baixar)
     print(f"[{nome}] Download iniciado")
 
@@ -920,7 +595,7 @@ def acessar_baixar_relatorio(
 
 
 def processar_aluno(
-    driver: webdriver.Chrome,
+    driver: WebDriver,
     wait: WebDriverWait,
     aba_principal: str,
     nome: str,
@@ -1012,7 +687,7 @@ def gravar_log_resumo(
     return caminho
 
 
-def baixar_todos(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+def baixar_todos(driver: WebDriver, wait: WebDriverWait) -> None:
     inicio = datetime.now()
     max_tentativas = 3
     print(f"Processo iniciado em: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
