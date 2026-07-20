@@ -746,8 +746,8 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
         if (el) el.scrollIntoView({block: 'center', behavior: 'instant'});
         """
     )
-    # tempo para animação de entrada terminar
-    time.sleep(3.0)
+    # animação Chart.js: pontos aparecem antes das linhas — espera as linhas terminarem
+    time.sleep(5.0)
 
     convertidos = driver.execute_async_script(
         """
@@ -767,54 +767,129 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
 
           function listCharts() {
             if (!window.Chart || !Chart.instances) return [];
-            return Chart.instances instanceof Map
+            return (Chart.instances instanceof Map
               ? [...Chart.instances.values()]
-              : Object.values(Chart.instances || {});
+              : Object.values(Chart.instances || {})
+            ).filter(Boolean);
+          }
+
+          function forcarLinhasVisiveis(chart) {
+            // Pontos animam primeiro; linhas (border) às vezes ficam de fora no freeze.
+            try {
+              if (typeof chart.stop === 'function') chart.stop();
+            } catch (e) {}
+
+            if (chart.options) {
+              chart.options.animation = false;
+              chart.options.animations = false;
+              if (chart.options.plugins && chart.options.plugins.tooltip) {
+                chart.options.plugins.tooltip.enabled = false;
+              }
+              // v2
+              if (chart.options.tooltips) chart.options.tooltips.enabled = false;
+              if (chart.options.hover) chart.options.hover.animationDuration = 0;
+              if (chart.options.responsiveAnimationDuration !== undefined) {
+                chart.options.responsiveAnimationDuration = 0;
+              }
+            }
+
+            const datasets = (chart.data && chart.data.datasets) || [];
+            datasets.forEach(ds => {
+              if (!ds) return;
+              ds.showLine = true;
+              ds.spanGaps = true;
+              // linhas retas = captura mais estável no PDF
+              if (ds.tension !== undefined) ds.tension = 0;
+              if (ds.lineTension !== undefined) ds.lineTension = 0;
+              const bw = Number(ds.borderWidth);
+              ds.borderWidth = (!bw || bw < 2) ? 3 : bw;
+              // garante pontos visíveis e estáveis
+              if (ds.pointRadius === undefined || ds.pointRadius === 0) {
+                ds.pointRadius = 3;
+              }
+              if (ds.pointHoverRadius !== undefined) {
+                ds.pointHoverRadius = ds.pointRadius;
+              }
+              ds.pointBorderWidth = ds.pointBorderWidth || 1;
+            });
+
+            // elements (Chart v3)
+            try {
+              if (chart.options && chart.options.elements) {
+                chart.options.elements.line = Object.assign(
+                  {}, chart.options.elements.line || {},
+                  { tension: 0, borderWidth: 3, border: false }
+                );
+                chart.options.elements.point = Object.assign(
+                  {}, chart.options.elements.point || {},
+                  { radius: 3, hoverRadius: 3 }
+                );
+              }
+            } catch (e) {}
           }
 
           try {
             if (window.Chart && Chart.defaults) {
               Chart.defaults.animation = false;
               Chart.defaults.animations = false;
+              if (Chart.defaults.global) {
+                Chart.defaults.global.animation = false;
+                if (Chart.defaults.global.hover) {
+                  Chart.defaults.global.hover.animationDuration = 0;
+                }
+              }
             }
           } catch (e) {}
 
-          const charts = listCharts().filter(Boolean);
-          for (const chart of charts) {
+          // 1) força estado final com linhas + pontos (sem animação)
+          for (const chart of listCharts()) {
             try {
-              if (chart.options) {
-                chart.options.animation = false;
-                chart.options.animations = false;
-              }
+              forcarLinhasVisiveis(chart);
               if (typeof chart.update === 'function') chart.update('none');
+              if (typeof chart.render === 'function') chart.render();
+              if (typeof chart.draw === 'function') chart.draw();
             } catch (e) {}
           }
 
-          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-          // espera animating=false
-          for (let i = 0; i < 40; i++) {
+          // 2) alguns frames para o stroke das linhas pintar de verdade
+          for (let i = 0; i < 10; i++) {
+            await new Promise(r => requestAnimationFrame(r));
+          }
+          for (let i = 0; i < 50; i++) {
             const anim = listCharts().some(c => c && (c.animating || c._animating));
             if (!anim) break;
             await new Promise(r => setTimeout(r, 100));
           }
+          // redesenha mais uma vez parado
+          for (const chart of listCharts()) {
+            try {
+              forcarLinhasVisiveis(chart);
+              if (typeof chart.update === 'function') chart.update('none');
+              if (typeof chart.draw === 'function') chart.draw();
+            } catch (e) {}
+          }
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          await new Promise(r => setTimeout(r, 400));
 
+          // 3) snapshot → destroy → redesenha bitmap no mesmo canvas
           for (const chart of listCharts()) {
             try {
               const canvas = chart.canvas || (chart.ctx && chart.ctx.canvas);
               if (!canvas) continue;
+              if (typeof chart.draw === 'function') chart.draw();
               const url = (typeof chart.toBase64Image === 'function')
                 ? chart.toBase64Image('image/png', 1)
-                : canvas.toDataURL('image/png');
+                : canvas.toDataURL('image/png', 1.0);
               const img = await loadImg(url);
               const w = canvas.width, h = canvas.height;
               const cssW = canvas.style.width, cssH = canvas.style.height;
               try { chart.destroy(); } catch (e) {}
-              // restore size (destroy can zero the canvas)
               canvas.width = img.naturalWidth || w;
               canvas.height = img.naturalHeight || h;
               if (cssW) canvas.style.width = cssW;
               if (cssH) canvas.style.height = cssH;
               const ctx = canvas.getContext('2d');
+              ctx.imageSmoothingEnabled = true;
               ctx.clearRect(0, 0, canvas.width, canvas.height);
               ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
               canvas.setAttribute('data-frozen', '1');
@@ -825,7 +900,7 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
           for (const canvas of Array.from(document.querySelectorAll('canvas'))) {
             if (canvas.getAttribute('data-frozen') === '1') continue;
             try {
-              const url = canvas.toDataURL('image/png');
+              const url = canvas.toDataURL('image/png', 1.0);
               const img = await loadImg(url);
               const ctx = canvas.getContext('2d');
               ctx.clearRect(0, 0, canvas.width, canvas.height);
