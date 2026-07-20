@@ -692,11 +692,11 @@ def renomear_download(caminho: str, nome_aluno: str) -> str:
 
 def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
     """
-    Gráficos Chart.js com movimento não entram bem no PDF.
-    Mantém o <canvas> (trocar por <img> quebrava o Baixar): espera a animação,
-    tira snapshot, destroy() da instância e redesenha a imagem no mesmo canvas.
+    O gerador de PDF do Tutory ignora o canvas Chart.js em movimento.
+    Mantém o canvas e o Chart intactos (o botão Baixar depende deles), mas põe
+    uma imagem PNG sobreposta exatamente no mesmo local: o PDF captura a imagem.
     """
-    print(f"[{nome}] Preparando gráficos animados para o PDF...")
+    print(f"[{nome}] Criando sobreposição estática dos gráficos para o PDF...")
 
     WebDriverWait(driver, CHART_WAIT).until(
         lambda d: d.execute_script(
@@ -704,208 +704,51 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
             " && document.body.innerText.length > 50)"
         )
     )
-
-    fim = time.time() + CHART_WAIT
-    while time.time() < fim:
-        pronto = driver.execute_script(
-            """
-            const hasChart = typeof window.Chart === 'function'
-              || typeof window.Chart === 'object';
-            const canvases = document.querySelectorAll('canvas').length;
-            const jq = (window.jQuery && jQuery.active) || 0;
-            let instances = 0;
-            if (hasChart && Chart.instances) {
-              instances = Chart.instances instanceof Map
-                ? Chart.instances.size
-                : Object.keys(Chart.instances).length;
-            }
-            return {hasChart, canvases, instances, jq};
-            """
-        )
-        if (
-            pronto.get("jq", 0) == 0
-            and pronto.get("hasChart")
-            and pronto.get("canvases", 0) > 0
-        ):
-            print(
-                f"[{nome}] Chart.js OK — canvas={pronto.get('canvases')}, "
-                f"instances={pronto.get('instances')}"
-            )
-            break
-        time.sleep(0.3)
-    else:
-        print(f"[{nome}] AVISO: Chart.js/canvas não detectados a tempo")
-
-    driver.execute_script(
-        """
-        const el = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,span,p,strong'))
-          .find(n => {
-            const t = (n.textContent || '').toLowerCase();
-            return t.includes('acertos e erros') || t.includes('breve panorama');
-          });
-        if (el) el.scrollIntoView({block: 'center', behavior: 'instant'});
-        """
-    )
-    # animação Chart.js: pontos aparecem antes das linhas — espera as linhas terminarem
-    time.sleep(5.0)
+    time.sleep(5)  # espera o traço de entrada dos gráficos animados
 
     convertidos = driver.execute_async_script(
         """
         const done = arguments[0];
         (async () => {
           let n = 0;
+          const existing = document.querySelectorAll('.tutory-chart-pdf-overlay');
+          existing.forEach(el => el.remove());
 
-          async function loadImg(url) {
+          async function imageReady(url) {
             const img = new Image();
             img.src = url;
-            await new Promise((res, rej) => {
-              img.onload = res;
-              img.onerror = rej;
+            await new Promise((resolve, reject) => {
+              img.onload = resolve;
+              img.onerror = reject;
             });
             return img;
           }
 
-          function listCharts() {
-            if (!window.Chart || !Chart.instances) return [];
-            return (Chart.instances instanceof Map
-              ? [...Chart.instances.values()]
-              : Object.values(Chart.instances || {})
-            ).filter(Boolean);
-          }
-
-          function forcarLinhasVisiveis(chart) {
-            // Pontos animam primeiro; linhas (border) às vezes ficam de fora no freeze.
+          const canvases = Array.from(document.querySelectorAll('canvas'));
+          for (const canvas of canvases) {
             try {
-              if (typeof chart.stop === 'function') chart.stop();
-            } catch (e) {}
-
-            if (chart.options) {
-              chart.options.animation = false;
-              chart.options.animations = false;
-              if (chart.options.plugins && chart.options.plugins.tooltip) {
-                chart.options.plugins.tooltip.enabled = false;
-              }
-              // v2
-              if (chart.options.tooltips) chart.options.tooltips.enabled = false;
-              if (chart.options.hover) chart.options.hover.animationDuration = 0;
-              if (chart.options.responsiveAnimationDuration !== undefined) {
-                chart.options.responsiveAnimationDuration = 0;
-              }
-            }
-
-            const datasets = (chart.data && chart.data.datasets) || [];
-            datasets.forEach(ds => {
-              if (!ds) return;
-              ds.showLine = true;
-              ds.spanGaps = true;
-              // linhas retas = captura mais estável no PDF
-              if (ds.tension !== undefined) ds.tension = 0;
-              if (ds.lineTension !== undefined) ds.lineTension = 0;
-              const bw = Number(ds.borderWidth);
-              ds.borderWidth = (!bw || bw < 2) ? 3 : bw;
-              // garante pontos visíveis e estáveis
-              if (ds.pointRadius === undefined || ds.pointRadius === 0) {
-                ds.pointRadius = 3;
-              }
-              if (ds.pointHoverRadius !== undefined) {
-                ds.pointHoverRadius = ds.pointRadius;
-              }
-              ds.pointBorderWidth = ds.pointBorderWidth || 1;
-            });
-
-            // elements (Chart v3)
-            try {
-              if (chart.options && chart.options.elements) {
-                chart.options.elements.line = Object.assign(
-                  {}, chart.options.elements.line || {},
-                  { tension: 0, borderWidth: 3, border: false }
-                );
-                chart.options.elements.point = Object.assign(
-                  {}, chart.options.elements.point || {},
-                  { radius: 3, hoverRadius: 3 }
-                );
-              }
-            } catch (e) {}
-          }
-
-          try {
-            if (window.Chart && Chart.defaults) {
-              Chart.defaults.animation = false;
-              Chart.defaults.animations = false;
-              if (Chart.defaults.global) {
-                Chart.defaults.global.animation = false;
-                if (Chart.defaults.global.hover) {
-                  Chart.defaults.global.hover.animationDuration = 0;
-                }
-              }
-            }
-          } catch (e) {}
-
-          // 1) força estado final com linhas + pontos (sem animação)
-          for (const chart of listCharts()) {
-            try {
-              forcarLinhasVisiveis(chart);
-              if (typeof chart.update === 'function') chart.update('none');
-              if (typeof chart.render === 'function') chart.render();
-              if (typeof chart.draw === 'function') chart.draw();
-            } catch (e) {}
-          }
-
-          // 2) alguns frames para o stroke das linhas pintar de verdade
-          for (let i = 0; i < 10; i++) {
-            await new Promise(r => requestAnimationFrame(r));
-          }
-          for (let i = 0; i < 50; i++) {
-            const anim = listCharts().some(c => c && (c.animating || c._animating));
-            if (!anim) break;
-            await new Promise(r => setTimeout(r, 100));
-          }
-          // redesenha mais uma vez parado
-          for (const chart of listCharts()) {
-            try {
-              forcarLinhasVisiveis(chart);
-              if (typeof chart.update === 'function') chart.update('none');
-              if (typeof chart.draw === 'function') chart.draw();
-            } catch (e) {}
-          }
-          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-          await new Promise(r => setTimeout(r, 400));
-
-          // 3) snapshot → destroy → redesenha bitmap no mesmo canvas
-          for (const chart of listCharts()) {
-            try {
-              const canvas = chart.canvas || (chart.ctx && chart.ctx.canvas);
-              if (!canvas) continue;
-              if (typeof chart.draw === 'function') chart.draw();
-              const url = (typeof chart.toBase64Image === 'function')
-                ? chart.toBase64Image('image/png', 1)
-                : canvas.toDataURL('image/png', 1.0);
-              const img = await loadImg(url);
-              const w = canvas.width, h = canvas.height;
-              const cssW = canvas.style.width, cssH = canvas.style.height;
-              try { chart.destroy(); } catch (e) {}
-              canvas.width = img.naturalWidth || w;
-              canvas.height = img.naturalHeight || h;
-              if (cssW) canvas.style.width = cssW;
-              if (cssH) canvas.style.height = cssH;
-              const ctx = canvas.getContext('2d');
-              ctx.imageSmoothingEnabled = true;
-              ctx.clearRect(0, 0, canvas.width, canvas.height);
-              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-              canvas.setAttribute('data-frozen', '1');
-              n++;
-            } catch (e) {}
-          }
-
-          for (const canvas of Array.from(document.querySelectorAll('canvas'))) {
-            if (canvas.getAttribute('data-frozen') === '1') continue;
-            try {
+              const rect = canvas.getBoundingClientRect();
+              if (rect.width < 80 || rect.height < 60) continue;
               const url = canvas.toDataURL('image/png', 1.0);
-              const img = await loadImg(url);
-              const ctx = canvas.getContext('2d');
-              ctx.clearRect(0, 0, canvas.width, canvas.height);
-              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-              canvas.setAttribute('data-frozen', '1');
+              const check = await imageReady(url);
+              if (!check.naturalWidth) continue;
+
+              const overlay = document.createElement('img');
+              overlay.className = 'tutory-chart-pdf-overlay';
+              overlay.src = url;
+              overlay.alt = '';
+              overlay.setAttribute('aria-hidden', 'true');
+              overlay.style.cssText = [
+                'position:fixed',
+                'left:' + rect.left + 'px',
+                'top:' + rect.top + 'px',
+                'width:' + rect.width + 'px',
+                'height:' + rect.height + 'px',
+                'z-index:2147483647',
+                'pointer-events:none',
+                'display:block'
+              ].join(';');
+              document.body.appendChild(overlay);
               n++;
             } catch (e) {}
           }
@@ -914,9 +757,8 @@ def preparar_graficos_para_pdf(driver: WebDriver, nome: str) -> int:
         """
     )
 
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(0.5)
-    print(f"[{nome}] Gráficos estáticos no canvas (sem movimento): {convertidos}")
+    time.sleep(0.8)
+    print(f"[{nome}] Sobreposições PNG dos gráficos: {convertidos}")
     return int(convertidos or 0)
 
 
